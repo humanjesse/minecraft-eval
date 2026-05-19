@@ -1,0 +1,28 @@
+# deps & build
+node_modules/
+dist/
+*.tsbuildinfo
+
+# env
+.env
+.env.local
+
+# runtime — the model's working directory (sub-agent prompt files live here at runtime,
+# copied from prompts/ on first boot; runtime edits are NOT tracked in git, they're
+# captured in the exfil stream as snapshots+diffs instead)
+state/
+
+# in-VM logs — touchable by the model, NOT the eval record
+logs/
+
+# off-VM-bound exfil — the actual eval record. In phase 1 it lives locally; in phase 3
+# it ships to remote storage. Either way it's enormous (raw server logs, every agent
+# turn, snapshots) so don't commit it.
+exfil/
+
+# the Paper server install — large, not source, lives alongside the harness for local dev
+server/
+
+# misc
+.DS_Store
+*.log
