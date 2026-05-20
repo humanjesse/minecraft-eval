@@ -11,11 +11,10 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "verbatimModuleSyntax": false,
-    "outDir": "dist",
-    "rootDir": "src",
+    "noEmit": true,
     "declaration": false,
-    "sourceMap": true
+    "sourceMap": false
   },
-  "include": ["src/**/*"],
+  "include": ["src/**/*", "scripts/**/*"],
   "exclude": ["node_modules", "dist", "server", "state", "exfil", "logs"]
 }
