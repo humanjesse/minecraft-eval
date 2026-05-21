@@ -14,6 +14,10 @@ export interface Config {
   stateDir: string;
   exfilDir: string;
   promptsDir: string;
+  // Unrestricted shell access. Off by default — only safe once the harness runs
+  // in an isolated VM (phase 3). The admin prompt describes bash as available;
+  // until this flips on, the bash tool is simply absent from the tool surface.
+  enableBash: boolean;
 }
 
 function parseModel(raw: string | undefined, fallback: string): ModelSpec {
@@ -38,5 +42,6 @@ export function loadConfig(): Config {
     stateDir: process.env.STATE_DIR ?? "./state",
     exfilDir: process.env.EXFIL_DIR ?? "./exfil",
     promptsDir: process.env.PROMPTS_DIR ?? "./prompts",
+    enableBash: process.env.ENABLE_BASH === "true",
   };
 }

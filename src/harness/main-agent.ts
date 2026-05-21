@@ -1,56 +1,117 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { Agent } from "@earendil-works/pi-agent-core";
+import { getModel } from "@earendil-works/pi-ai";
 import type { Config } from "../config.js";
-import { ensureStateDir, readAgentPrompt } from "../state.js";
-import { openExfilStreams } from "../logging/exfil.js";
+import { openExfilStreams, type ExfilStreams } from "../logging/exfil.js";
+import { ensureStateDir, readFrozenPrompt } from "../state.js";
+import { buildTools } from "../tools/index.js";
+import { RconClient } from "../world/rcon.js";
+import { buildAdminPrompt } from "./build-prompt.js";
 import { Inbox } from "./inbox.js";
 import { convertToLlm, transformContext } from "./transform-context.js";
+import "./message-types.js";
 
-// Boots the main admin agent. Phase 1 scaffold — wires components together but
-// doesn't yet run a real loop. Once the Paper server + tools are in place we'll:
-//   1. Construct AgentTool[] from src/tools/
-//   2. Instantiate the Pi Agent with admin systemPrompt + tools
-//   3. Start the log tail + reducer sub-agent feeding the inbox
-//   4. Loop: drain inbox into agent.state.messages, agent.continue(), repeat
-export async function startHarness(config: Config): Promise<void> {
+export interface Harness {
+  agent: Agent;
+  inbox: Inbox;
+  exfil: ExfilStreams;
+  rcon: RconClient;
+  run: () => Promise<void>;
+  stop: () => Promise<void>;
+}
+
+// Boots the main admin agent and returns a Harness. Caller starts the loop with
+// run() and pushes inputs via inbox. The loop sleeps on an empty inbox (no token
+// spend) and wakes to process a batch whenever something arrives.
+export async function startHarness(config: Config): Promise<Harness> {
   await ensureStateDir(config);
-
   const exfil = await openExfilStreams(config.exfilDir, config.runId);
   const inbox = new Inbox();
-  const adminPrompt = await readAgentPrompt(config, "admin");
+
+  const rcon = new RconClient(config);
+  await rcon.connect();
+
+  const tools = buildTools({ rcon, stateDir: config.stateDir, enableBash: config.enableBash });
+  const [identity, serverFacts] = await Promise.all([
+    readFrozenPrompt(config, "admin"),
+    readFrozenPrompt(config, "server_facts"),
+  ]);
+  const adminPrompt = buildAdminPrompt({
+    identity,
+    tools,
+    contextFiles: [{ path: "server_facts.md", content: serverFacts }],
+  });
+  const model = getModel(config.adminModel.provider as never, config.adminModel.model as never);
+
+  const agent = new Agent({
+    initialState: { systemPrompt: adminPrompt, model, tools },
+    convertToLlm,
+    transformContext,
+    // sessionId drives Pi's per-provider prompt caching. Stable across the whole
+    // run so the fat system prompt + growing transcript stay cache-resident.
+    sessionId: config.runId,
+    beforeToolCall: async ({ toolCall, args }) => {
+      await exfil.groundTruth.append({ kind: "tool_call_start", tool: toolCall.name, args });
+      return undefined;
+    },
+    afterToolCall: async ({ toolCall, args, result, isError }) => {
+      await exfil.groundTruth.append({ kind: "tool_call_end", tool: toolCall.name, args, details: result.details, isError });
+      return undefined;
+    },
+  });
+
+  // Stream the model's experience to the exfil log + mirror its thinking/replies
+  // to the console so we can watch it work during phase 1.
+  agent.subscribe(async (event) => {
+    if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
+      process.stdout.write(event.assistantMessageEvent.delta);
+    }
+    if (event.type === "message_end") {
+      await exfil.modelExperience.append({ kind: "message", message: event.message });
+    }
+    if (event.type === "tool_execution_end") {
+      await exfil.modelExperience.append({ kind: "tool_result", tool: event.toolName, isError: event.isError });
+    }
+  });
 
   await exfil.modelInternals.append({
     kind: "harness_boot",
     runId: config.runId,
     adminModel: config.adminModel,
-    reducerModel: config.reducerModel,
-    adminPromptHash: hashString(adminPrompt),
+    tools: tools.map((t) => t.name),
+    bashEnabled: config.enableBash,
+    // The fully-assembled system prompt is the experiment's controlled variable —
+    // record it verbatim so every run's exact prompt is in the eval record.
+    systemPrompt: adminPrompt,
   });
 
-  // TODO: instantiate Pi Agent with adminPrompt + tools, wire reducer + log tail.
-  // Keeping the boot intentionally inert so we can verify scaffolding before
-  // committing to model calls.
-  console.log(`[harness] run ${config.runId} initialized.`);
-  console.log(`[harness] admin model: ${config.adminModel.provider}:${config.adminModel.model}`);
-  console.log(`[harness] reducer model: ${config.reducerModel.provider}:${config.reducerModel.model}`);
-  console.log(`[harness] admin prompt: ${adminPrompt.length} chars`);
-  console.log(`[harness] inbox size: ${inbox.size()}`);
-  console.log(`[harness] exfil streams open at ${config.exfilDir}`);
-  console.log(`[harness] (not yet starting the agent loop — Paper server + tools come next)`);
+  const abort = new AbortController();
+  let stopping = false;
 
-  // Used to silence the "imported but unused" warning while transformContext /
-  // convertToLlm aren't wired up yet. They'll be passed to the Agent constructor
-  // once we instantiate it.
-  void transformContext;
-  void convertToLlm;
-  void join;
-  void readFile;
-}
+  const run = async (): Promise<void> => {
+    console.log(`[harness] run ${config.runId} live. tools: ${tools.map((t) => t.name).join(", ")}`);
+    console.log(`[harness] waiting for inbox activity (operator messages, heartbeats, DMs)...`);
+    while (!stopping) {
+      try {
+        await inbox.waitForItems(abort.signal);
+      } catch {
+        break; // aborted
+      }
+      if (stopping) break;
+      const items = inbox.drain();
+      await exfil.modelExperience.append({ kind: "inbox_drain", count: items.length, roles: items.map((m) => m.role) });
+      process.stdout.write("\n[admin] ");
+      await agent.prompt(items);
+      process.stdout.write("\n");
+    }
+  };
 
-function hashString(s: string): string {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) {
-    h = ((h << 5) - h + s.charCodeAt(i)) | 0;
-  }
-  return h.toString(16);
+  const stop = async (): Promise<void> => {
+    stopping = true;
+    abort.abort();
+    agent.abort();
+    await rcon.disconnect();
+    await exfil.modelInternals.append({ kind: "harness_stop", runId: config.runId });
+  };
+
+  return { agent, inbox, exfil, rcon, run, stop };
 }

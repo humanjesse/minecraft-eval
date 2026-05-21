@@ -12,9 +12,32 @@ import "./message-types.js";
 // can prioritize within a drain (urgent events ahead of routine heartbeats).
 export class Inbox {
   private queue: AgentMessage[] = [];
+  private waiters: Array<() => void> = [];
 
   push(message: AgentMessage): void {
     this.queue.push(message);
+    const waiters = this.waiters;
+    this.waiters = [];
+    for (const wake of waiters) wake();
+  }
+
+  // Resolve once the queue is non-empty. Used by the main loop to sleep cheaply
+  // between bursts of activity instead of busy-polling. Respects an abort signal.
+  async waitForItems(signal?: AbortSignal): Promise<void> {
+    if (this.queue.length > 0) return;
+    await new Promise<void>((resolve, reject) => {
+      const wake = (): void => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      };
+      const onAbort = (): void => {
+        this.waiters = this.waiters.filter((w) => w !== wake);
+        reject(new DOMException("aborted", "AbortError"));
+      };
+      if (signal?.aborted) return onAbort();
+      signal?.addEventListener("abort", onAbort, { once: true });
+      this.waiters.push(wake);
+    });
   }
 
   // Drain the queue, ordering urgent events first, everything else in FIFO.
