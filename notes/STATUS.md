@@ -32,27 +32,38 @@ Model memory resets between 2 and 3 so phase 3 is the clean longitudinal traject
   log. Identity verified to pull the model into admin character (vs. assistant mode).
 - **Exfil logging.** Three JSONL tiers per run under `exfil/<run-id>/`:
   ground_truth, model_experience, model_internals.
+- **Autonomous reducer loop (multi-reducer).** Log tail → parser demux → two
+  reducers (`events`, `chat`) on the cheap model, each with its own neutral,
+  editable prompt → labeled heartbeats (`[heartbeat:chat]`) + urgent into the inbox →
+  admin reacts unprompted. Verified end-to-end: synthetic log activity drove the
+  admin to investigate + record on its own. Reducers are **neutral** (salience not
+  judgment; `urgent` infra-only). `scripts/smoke-reducer.ts` checks neutrality holds.
 
 ## Not built yet (roughly in order)
 
-1. **Reducer loop** — the autonomous firehose. Tail `server.log` → batch lines →
-   cheap model with `state/agents/reducer.md` → emit heartbeat digests (and urgent
-   interrupts) into the inbox. This is what makes the harness run on its own instead
-   of being hand-driven by operator messages. **Next up.**
-2. **Log-tail → reducer wiring** — connect `src/world/log-tail.ts` and the
-   `events.ts` parser to the reducer.
-3. **Player DMs** — a real channel for players to message the admin, per-player
+1. **Player DMs** — a real channel for players to message the admin, per-player
    history, and compaction into `[your prior notes on <player>]` summaries (the
    summaries are themselves eval data — the model's evolving view of each player).
-4. **`transformContext` compaction** — currently a passthrough. Needs: drop stale
-   heartbeats, compact long DM threads, keep context bounded over a multi-week run.
-5. **World snapshots** — periodic level.dat/region snapshots into ground_truth, so
-   we can answer "did the world change in ways the model didn't notice."
-6. **First real player session** — developer joins, plays, reducer surfaces it, agent
+2. **`transformContext` compaction + synthesis tick** — `transformContext` is
+   currently a passthrough. Needs: drop stale heartbeats, compact long DM threads,
+   keep context bounded over a multi-week run. The synthesis tick is the model doing
+   its own deliberate consolidation (see notes/STRATEGIES.md).
+3. **Log rotation handling** — Paper rotates `latest.log` on restart; `tailLog`
+   watches one path and won't reopen, so reducers go deaf after the first server
+   restart. Needs reopen-on-rotation. Required before any multi-day run. (Lives in
+   the ingestion layer — see #4.)
+4. **Durable event spool / LogIngestor** (phase-3 hardening) — decouple ingestion
+   (one writer: tail → parse → ground_truth, assigning seq ids) from reduction
+   (reducers read seq-ranges). `ground_truth.jsonl` already *is* a durable event log,
+   so this is mostly making reducers read from it instead of in-memory buffers —
+   buys crash-resume + proper reducer retry/backoff for free.
+5. **World-change observer** — neutral block-change reducer (different input source).
+6. **World snapshots** — periodic level.dat/region snapshots into ground_truth.
+7. **First real player session** — developer joins, plays, reducers surface it, agent
    responds. The first taste of the actual loop.
-7. **VM cutover** — when we enable `bash`, move off the laptop to an isolated VM.
+8. **VM cutover** — when we enable `bash`, move off the laptop to an isolated VM.
    Naturally coincides with the phase-2→3 boundary + memory reset.
-8. **Off-VM exfil target** — point `EXFIL_DIR` at remote storage for phase 3 so the
+9. **Off-VM exfil target** — point `EXFIL_DIR` at remote storage for phase 3 so the
    record survives the model nuking its environment.
 
 ## Known issues / watch-list
@@ -61,4 +72,10 @@ Model memory resets between 2 and 3 so phase 3 is the clean longitudinal traject
   harmless, gets wiped at the phase reset.
 - Reducer cadence (every N lines vs every M seconds) is undecided — tune against
   real server activity in phase 1.
+- Reducer failures are logged (`reducer_error`) and surfaced to the admin as degraded
+  heartbeats; raw lines survive in ground_truth. Proper retry/resume waits on the
+  durable spool (#4).
+- Log ingestion failures are logged (`ingestion_error`) and surfaced as
+  `log_ingestion_error` urgent events, but the current tailer still does not
+  auto-reopen after rotation/restart (#3).
 - The admin system prompt is a working draft. It's load-bearing; expect iteration.

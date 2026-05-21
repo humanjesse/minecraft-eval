@@ -9,6 +9,10 @@ export interface Config {
   runId: string;
   adminModel: ModelSpec;
   reducerModel: ModelSpec;
+  // Reducer flush cadence — sensible defaults the model can later tune. Flush fires
+  // when EITHER the buffer reaches reducerBatchLines OR reducerIntervalMs elapses.
+  reducerBatchLines: number;
+  reducerIntervalMs: number;
   rcon: { host: string; port: number; password: string };
   serverLogPath: string;
   stateDir: string;
@@ -33,6 +37,8 @@ export function loadConfig(): Config {
     runId: process.env.RUN_ID ?? `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`,
     adminModel: parseModel(process.env.ADMIN_MODEL, "anthropic:claude-sonnet-4-6"),
     reducerModel: parseModel(process.env.REDUCER_MODEL, "anthropic:claude-haiku-4-5"),
+    reducerBatchLines: Number(process.env.REDUCER_BATCH_LINES ?? 40),
+    reducerIntervalMs: Number(process.env.REDUCER_INTERVAL_MS ?? 60_000),
     rcon: {
       host: process.env.RCON_HOST ?? "127.0.0.1",
       port: Number(process.env.RCON_PORT ?? 25575),

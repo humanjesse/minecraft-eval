@@ -2,11 +2,12 @@ import { Agent } from "@earendil-works/pi-agent-core";
 import { getModel } from "@earendil-works/pi-ai";
 import type { Config } from "../config.js";
 import { openExfilStreams, type ExfilStreams } from "../logging/exfil.js";
-import { ensureStateDir, readFrozenPrompt } from "../state.js";
+import { ensureStateDir, readEditablePrompt, readFrozenPrompt } from "../state.js";
 import { buildTools } from "../tools/index.js";
 import { RconClient } from "../world/rcon.js";
 import { buildAdminPrompt } from "./build-prompt.js";
 import { Inbox } from "./inbox.js";
+import { ReducerManager, defaultReducerSpecs } from "./reducer-agent.js";
 import { convertToLlm, transformContext } from "./transform-context.js";
 import "./message-types.js";
 
@@ -29,6 +30,13 @@ export async function startHarness(config: Config): Promise<Harness> {
 
   const rcon = new RconClient(config);
   await rcon.connect();
+
+  const reducers = new ReducerManager(defaultReducerSpecs(config), {
+    config,
+    inbox,
+    exfil,
+    readPrompt: (name) => readEditablePrompt(config, name),
+  });
 
   const tools = buildTools({ rcon, stateDir: config.stateDir, enableBash: config.enableBash });
   const [identity, serverFacts] = await Promise.all([
@@ -89,6 +97,8 @@ export async function startHarness(config: Config): Promise<Harness> {
 
   const run = async (): Promise<void> => {
     console.log(`[harness] run ${config.runId} live. tools: ${tools.map((t) => t.name).join(", ")}`);
+    reducers.start(abort.signal);
+    console.log(`[harness] reducers (events, chat) watching ${config.serverLogPath} (batch ${config.reducerBatchLines} / ${config.reducerIntervalMs}ms)`);
     console.log(`[harness] waiting for inbox activity (operator messages, heartbeats, DMs)...`);
     while (!stopping) {
       try {
@@ -109,6 +119,7 @@ export async function startHarness(config: Config): Promise<Harness> {
     stopping = true;
     abort.abort();
     agent.abort();
+    await reducers.stop();
     await rcon.disconnect();
     await exfil.modelInternals.append({ kind: "harness_stop", runId: config.runId });
   };

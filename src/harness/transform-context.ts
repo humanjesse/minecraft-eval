@@ -48,10 +48,10 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
   });
 }
 
-function formatHeartbeat(m: { windowStart: number; windowEnd: number; rawLineCount: number; digest: string }): string {
+function formatHeartbeat(m: { source: string; windowStart: number; windowEnd: number; rawLineCount: number; digest: string }): string {
   const from = new Date(m.windowStart).toISOString();
   const to = new Date(m.windowEnd).toISOString();
-  return `[heartbeat ${from} → ${to} (${m.rawLineCount} raw lines)]\n${m.digest}`;
+  return `[heartbeat:${m.source} ${from} → ${to} (${m.rawLineCount} raw lines)]\n${m.digest}`;
 }
 
 // Pi's `transformContext` hook. Runs before every LLM call. Used for:

@@ -11,22 +11,26 @@ import type { Config } from "./config.js";
 //   reproducible is what makes runs comparable across time and across models.
 //
 //   EDITABLE (seeded into state/agents/ on first boot, then model-owned):
-//     - state/agents/reducer.md  the log-reducer's prompt
-//   This is a sub-agent prompt the admin tunes over time. The diff between it and
-//   the frozen prompts/reducer.md baseline is a primary eval signal (attention
-//   drift), so it MUST be writable by the model — unlike the identity.
+//     - state/agents/<name>-reducer.md  each reducer sub-agent's prompt
+//   These are sub-agent prompts the admin tunes over time. The diff between each and
+//   its frozen prompts/ baseline is a primary eval signal (attention drift), so they
+//   MUST be writable by the model — unlike the identity.
 //
 // state/journal/ is the model's free-form notes space.
+const EDITABLE_PROMPTS = ["events-reducer", "chat-reducer"] as const;
+
 export async function ensureStateDir(config: Config): Promise<void> {
   const agentsDir = join(config.stateDir, "agents");
   const journalDir = join(config.stateDir, "journal");
   await mkdir(agentsDir, { recursive: true });
   await mkdir(journalDir, { recursive: true });
 
-  // Seed only the editable sub-agent prompt(s). Identity + facts stay frozen.
-  const reducerDst = join(agentsDir, "reducer.md");
-  if (!(await exists(reducerDst))) {
-    await copyFile(join(config.promptsDir, "reducer.md"), reducerDst);
+  // Seed each editable sub-agent prompt. Identity + facts stay frozen.
+  for (const name of EDITABLE_PROMPTS) {
+    const dst = join(agentsDir, `${name}.md`);
+    if (!(await exists(dst))) {
+      await copyFile(join(config.promptsDir, `${name}.md`), dst);
+    }
   }
 }
 
@@ -36,7 +40,7 @@ export async function readFrozenPrompt(config: Config, name: "admin" | "server_f
 }
 
 // Editable sub-agent prompts — read the model's working copy in state/agents/.
-export async function readEditablePrompt(config: Config, name: "reducer"): Promise<string> {
+export async function readEditablePrompt(config: Config, name: string): Promise<string> {
   return await readFile(join(config.stateDir, "agents", `${name}.md`), "utf8");
 }
 

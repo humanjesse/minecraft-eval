@@ -20,10 +20,13 @@ declare module "@earendil-works/pi-agent-core" {
   }
 }
 
-// Reducer's digest of a window of server activity. The default "tick" input.
+// A reducer's digest of a window of server activity. The default "tick" input.
+// `source` names which reducer produced it (e.g. "events", "chat") — there are
+// several, each watching a filtered slice of the firehose with its own prompt.
 export interface HeartbeatMessage {
   role: "heartbeat";
   timestamp: number;
+  source: string;
   windowStart: number;
   windowEnd: number;
   rawLineCount: number;
