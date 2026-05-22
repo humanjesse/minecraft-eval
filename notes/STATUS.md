@@ -65,21 +65,29 @@ Model memory resets between 2 and 3 so phase 3 is the clean longitudinal traject
   (no conduct labels, no false `urgent`), prompt caching across turns, `tell` outbound
   DM. NOT yet exercised live: log rotation (needs a Paper restart), the count-trigger
   flush (needs a >batch burst), the sliding window under load.
-- **Player DMs — built, unit-tested, live smoke pending.** A private 1:1 channel: a
-  Paper plugin (`plugin/`, built with plain `javac`+`jar` via `plugin/build.sh` against
-  `server/libraries` paper-api — no Maven/Gradle) exposes non-broadcasting `/dm <msg>`,
-  appending `{ts,player,uuid,message}` to an inbound spool (`data/dm-inbound.jsonl`,
-  matched to the plugin's `config.yml` `spool-path`). The harness DM ingestor
-  (`src/dms/ingest.ts`) tails the spool — reconciling DMs spooled during downtime by seq
-  on boot, then tailing live gap-free — and per DM: write-through to the canonical store
-  (`src/dms/store.ts`: working `data/dms.jsonl` **+** off-VM `exfil/dms.jsonl`, persistent
-  across runs, outside `state/`) and push a `player_dm` to the inbox carrying full content
-  (one guaranteed look, bypassing the reducers). Recall via `read_dms(player,n)` /
-  `list_dm_threads()` (neutral metadata derived from the log); every `tell` appends to the
-  player's thread. Retrieval is logged for free via the existing tool-result exfil. Unit
-  tests cover the store (index, neutral metadata, reload/seq-resume, torn-line tolerance)
-  and the ingestor (downtime replay, seq de-dup, parse-error survival). **Not yet live:**
-  needs a Paper restart to load the plugin + harness restart, then an in-game `/dm`.
+- **Player DMs — built and live-verified end-to-end.** A private 1:1 channel: a Paper
+  plugin (`plugin/`, built with plain `javac`+`jar` via `plugin/build.sh` against
+  `server/libraries` paper-api — no Maven/Gradle, targets Java 21 bytecode for Paper's
+  remapper) exposes non-broadcasting `/dm <msg>`, appending `{ts,player,uuid,message}`
+  to an inbound spool (`data/dm-inbound.jsonl`, matched to the plugin's `config.yml`
+  `spool-path`). The harness DM ingestor (`src/dms/ingest.ts`) tails the spool —
+  reconciling DMs spooled during downtime by seq on boot, then tailing live gap-free —
+  and per DM: write-through to the canonical store (`src/dms/store.ts`: working
+  `data/dms.jsonl` **+** off-VM `exfil/dms.jsonl`, persistent across runs, outside
+  `state/`; durable-first, record-first ordering so a failed persist never leaves a
+  phantom message or loses the audit) and push a `player_dm` to the inbox carrying full
+  content (one guaranteed look, bypassing the reducers). Recall via `read_dms(player,n)`
+  / `list_dm_threads()` (neutral metadata derived from the log); every `tell` appends
+  to the player's thread. Retrieval is logged for free via the existing tool-result
+  exfil. Unit tests cover the store (index, neutral metadata, reload/seq-resume,
+  torn-line tolerance) and the ingestor (downtime replay, seq de-dup, parse-error +
+  shape-validation survival). Live session 2026-05-22 confirmed: plugin → spool →
+  byte-identical write-through to both sinks → inbox notification wakes admin → `tell`
+  reply appended back to the thread → `read_dms` + `list_dm_threads` exercised on a
+  follow-up DM (including correct cross-run thread reconstruction from an earlier
+  run's `out` entry, and the `sinceLastReply` counter ticking on a new inbound).
+  Boot reconciliation + JSON-escaping checks remain optional polish; everything
+  load-bearing has been observed.
 - **RCON reconnect on server restart.** `RconClient.send()` reconnects when the socket
   has dropped (server restart) and retries once — but only when the socket is
   *known-dead* (an 'end'/'error' cleared the handle), so a live-socket failure (e.g. a
@@ -94,7 +102,12 @@ Model memory resets between 2 and 3 so phase 3 is the clean longitudinal traject
    encouragement). A periodic consolidation tick — the model deliberately writing
    durable `state/` notes before old context ages out — is held until a sustained
    session shows the model *isn't* self-maintaining. Whether it self-maintains is
-   itself signal, so we don't pre-build this. (see notes/STRATEGIES.md)
+   itself signal, so we don't pre-build this. (see notes/STRATEGIES.md) **Early
+   evidence leans against building it:** two independent unprompted self-maintenance
+   actions in the 2026-05-22 live session — (a) writing a journal note about a Paper
+   restart on its own, and (b) calling `list_dm_threads` on first wake post-restart
+   to check for pending DMs without being asked. One session, fishbowl-aware, but
+   two real data points. Keep watching across a longer run before committing.
 2. **Durable event spool / LogIngestor** (phase-3 hardening) — decouple ingestion
    (one writer: tail → parse → ground_truth, assigning seq ids) from reduction
    (reducers read seq-ranges). `ground_truth.jsonl` already *is* a durable event log,
