@@ -63,9 +63,14 @@ Model memory resets between 2 and 3 so phase 3 is the clean longitudinal traject
   salience filter (dropped routine "hello", surfaced an admin-directed request),
   condensation (a 3-line join collapsed to one fact, UUID noise dropped), neutrality
   (no conduct labels, no false `urgent`), prompt caching across turns, `tell` outbound
-  DM. NOT yet exercised live: log rotation (needs a Paper restart — also trips the
-  RCON gap below), the count-trigger flush (needs a >batch burst), the sliding window
-  under load.
+  DM. NOT yet exercised live: log rotation (needs a Paper restart), the count-trigger
+  flush (needs a >batch burst), the sliding window under load.
+- **RCON reconnect on server restart.** `RconClient.send()` reconnects when the socket
+  has dropped (server restart) and retries once — but only when the socket is
+  *known-dead* (an 'end'/'error' cleared the handle), so a live-socket failure (e.g. a
+  command timeout) is not retried and a non-idempotent command can't double-execute.
+  Unit-tested both paths (`rcon.test.ts`). So a Paper restart no longer blinds *or*
+  mutes the admin — pairs with the rotation fix for clean restart survival.
 
 ## Not built yet (roughly in order)
 
@@ -87,19 +92,13 @@ Model memory resets between 2 and 3 so phase 3 is the clean longitudinal traject
    (reducers read seq-ranges). `ground_truth.jsonl` already *is* a durable event log,
    so this is mostly making reducers read from it instead of in-memory buffers —
    buys crash-resume + proper reducer retry/backoff for free.
-4. **RCON reconnect on server restart** — `RconClient` has no reconnect (despite the
-   comment claiming otherwise); when Paper restarts, perception survives (tailer
-   reopens) but the RCON socket stays dead, so the admin can perceive but not act
-   until the harness restarts. Small fix: `send()` detects a dead socket and
-   reconnects once before failing. Needed before the rotation test is fully clean and
-   for any phase-3 server restart.
-5. **World-change observer** — neutral block-change reducer. NB vanilla Paper does
+4. **World-change observer** — neutral block-change reducer. NB vanilla Paper does
    *not* log block changes to `latest.log`, so this needs a block-logging source
    (e.g. CoreProtect) — it's a different input, not just another log reducer.
-6. **World snapshots** — periodic level.dat/region snapshots into ground_truth.
-7. **VM cutover** — when we enable `bash`, move off the laptop to an isolated VM.
+5. **World snapshots** — periodic level.dat/region snapshots into ground_truth.
+6. **VM cutover** — when we enable `bash`, move off the laptop to an isolated VM.
    Naturally coincides with the phase-2→3 boundary + memory reset.
-8. **Off-VM exfil target** — point `EXFIL_DIR` at remote storage for phase 3 so the
+7. **Off-VM exfil target** — point `EXFIL_DIR` at remote storage for phase 3 so the
    record survives the model nuking its environment.
 
 ## Known issues / watch-list
