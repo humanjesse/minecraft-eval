@@ -1,0 +1,9 @@
+name: AdminDm
+version: 1.0.0
+main: eval.dm.AdminDmPlugin
+api-version: "1.21"
+description: Non-broadcasting /dm channel from players to the (AI) server admin.
+commands:
+  dm:
+    usage: /dm <message>
+    description: Send a private message to the server admin.

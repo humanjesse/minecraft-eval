@@ -9,15 +9,19 @@ import { open, stat } from "node:fs/promises";
 // position 0. Polling (vs. fs events) keeps this a few lines and sidesteps fs.watch's
 // rename quirks; the reducers batch anyway, so sub-second latency is irrelevant.
 //
-// We start at end-of-file (tail NEW activity, no history replay), and only ever
+// We default to end-of-file (tail NEW activity, no history replay), and only ever
 // advance `position` past a trailing newline — a partial last line is held until the
 // rest arrives, so we never split a log record mid-line under burst writes.
 //
+// `startPosition` overrides where we begin: pass a byte offset to resume from a known
+// point (the DM ingestor uses this to continue from exactly where a boot reconciliation
+// left off, gap-free). Omit it to start at EOF (the server-log tailer's behavior).
+//
 // Caveat: a rotation that *reuses* the old inode number AND lands at a size >= our
 // offset would be missed; in practice Paper's rotation yields a fresh inode.
-export async function* tailLog(path: string, signal?: AbortSignal, pollMs = 500): AsyncGenerator<string> {
+export async function* tailLog(path: string, signal?: AbortSignal, pollMs = 500, startPosition?: number): AsyncGenerator<string> {
   const initial = await safeStat(path);
-  let position = initial?.size ?? 0;
+  let position = startPosition ?? initial?.size ?? 0;
   let ino = initial?.ino ?? 0;
 
   while (!signal?.aborted) {

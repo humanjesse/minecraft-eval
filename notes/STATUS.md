@@ -65,6 +65,21 @@ Model memory resets between 2 and 3 so phase 3 is the clean longitudinal traject
   (no conduct labels, no false `urgent`), prompt caching across turns, `tell` outbound
   DM. NOT yet exercised live: log rotation (needs a Paper restart), the count-trigger
   flush (needs a >batch burst), the sliding window under load.
+- **Player DMs — built, unit-tested, live smoke pending.** A private 1:1 channel: a
+  Paper plugin (`plugin/`, built with plain `javac`+`jar` via `plugin/build.sh` against
+  `server/libraries` paper-api — no Maven/Gradle) exposes non-broadcasting `/dm <msg>`,
+  appending `{ts,player,uuid,message}` to an inbound spool (`data/dm-inbound.jsonl`,
+  matched to the plugin's `config.yml` `spool-path`). The harness DM ingestor
+  (`src/dms/ingest.ts`) tails the spool — reconciling DMs spooled during downtime by seq
+  on boot, then tailing live gap-free — and per DM: write-through to the canonical store
+  (`src/dms/store.ts`: working `data/dms.jsonl` **+** off-VM `exfil/dms.jsonl`, persistent
+  across runs, outside `state/`) and push a `player_dm` to the inbox carrying full content
+  (one guaranteed look, bypassing the reducers). Recall via `read_dms(player,n)` /
+  `list_dm_threads()` (neutral metadata derived from the log); every `tell` appends to the
+  player's thread. Retrieval is logged for free via the existing tool-result exfil. Unit
+  tests cover the store (index, neutral metadata, reload/seq-resume, torn-line tolerance)
+  and the ingestor (downtime replay, seq de-dup, parse-error survival). **Not yet live:**
+  needs a Paper restart to load the plugin + harness restart, then an in-game `/dm`.
 - **RCON reconnect on server restart.** `RconClient.send()` reconnects when the socket
   has dropped (server restart) and retries once — but only when the socket is
   *known-dead* (an 'end'/'error' cleared the handle), so a live-socket failure (e.g. a
@@ -74,31 +89,25 @@ Model memory resets between 2 and 3 so phase 3 is the clean longitudinal traject
 
 ## Not built yet (roughly in order)
 
-1. **Player DMs** — *designed, not built* (see DESIGN.md → Player DMs). A private 1:1
-   channel: a Paper plugin `/dm <msg>` (non-broadcasting) appends to a durable
-   `dms.jsonl`; inbound DMs notify the single main agent (full message content, wakes
-   a turn — no awareness line, no DM-heartbeat); recall via `read_dms(player, n)` +
-   `list_dm_threads()` (neutral metadata derived from the log); replies via `tell`,
-   appended back. One sovereign (not per-player sessions); DMs bypass the reducers
-   (full fidelity). Depends on the plugin → phase 2/3.
-2. **Synthesis tick** (deferred, observe-first) — context bounding now works via the
+1. **Synthesis tick** (deferred, observe-first) — context bounding now works via the
    sliding window (above), and the model can already take notes (file tools + prompt
    encouragement). A periodic consolidation tick — the model deliberately writing
    durable `state/` notes before old context ages out — is held until a sustained
    session shows the model *isn't* self-maintaining. Whether it self-maintains is
    itself signal, so we don't pre-build this. (see notes/STRATEGIES.md)
-3. **Durable event spool / LogIngestor** (phase-3 hardening) — decouple ingestion
+2. **Durable event spool / LogIngestor** (phase-3 hardening) — decouple ingestion
    (one writer: tail → parse → ground_truth, assigning seq ids) from reduction
    (reducers read seq-ranges). `ground_truth.jsonl` already *is* a durable event log,
    so this is mostly making reducers read from it instead of in-memory buffers —
-   buys crash-resume + proper reducer retry/backoff for free.
-4. **World-change observer** — neutral block-change reducer. NB vanilla Paper does
+   buys crash-resume + proper reducer retry/backoff for free. (The DM ingestor already
+   does seq-based reconcile-on-boot — this generalizes that to the server-log path.)
+3. **World-change observer** — neutral block-change reducer. NB vanilla Paper does
    *not* log block changes to `latest.log`, so this needs a block-logging source
    (e.g. CoreProtect) — it's a different input, not just another log reducer.
-5. **World snapshots** — periodic level.dat/region snapshots into ground_truth.
-6. **VM cutover** — when we enable `bash`, move off the laptop to an isolated VM.
+4. **World snapshots** — periodic level.dat/region snapshots into ground_truth.
+5. **VM cutover** — when we enable `bash`, move off the laptop to an isolated VM.
    Naturally coincides with the phase-2→3 boundary + memory reset.
-7. **Off-VM exfil target** — point `EXFIL_DIR` at remote storage for phase 3 so the
+6. **Off-VM exfil target** — point `EXFIL_DIR` at remote storage for phase 3 so the
    record survives the model nuking its environment.
 
 ## Known issues / watch-list

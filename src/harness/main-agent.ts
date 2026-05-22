@@ -1,6 +1,8 @@
 import { Agent } from "@earendil-works/pi-agent-core";
 import { getModel } from "@earendil-works/pi-ai";
 import { adminPromptName, type Config } from "../config.js";
+import { DmStore } from "../dms/store.js";
+import { startDmIngestor } from "../dms/ingest.js";
 import { openExfilStreams, type ExfilStreams } from "../logging/exfil.js";
 import { ensureStateDir, readEditablePrompt, readFrozenPrompt } from "../state.js";
 import { buildTools } from "../tools/index.js";
@@ -31,6 +33,12 @@ export async function startHarness(config: Config): Promise<Harness> {
   const rcon = new RconClient(config);
   await rcon.connect();
 
+  // Canonical DM store — load rebuilds the in-memory index from the persistent working
+  // store so threads survive a harness reboot (the ingestor reconciles the spool against
+  // it on start).
+  const dmStore = new DmStore(config.dmStorePath, config.dmRecordPath, config.runId);
+  await dmStore.load();
+
   const reducers = new ReducerManager(defaultReducerSpecs(config), {
     config,
     inbox,
@@ -38,7 +46,7 @@ export async function startHarness(config: Config): Promise<Harness> {
     readPrompt: (name) => readEditablePrompt(config, name),
   });
 
-  const tools = buildTools({ rcon, stateDir: config.stateDir, enableBash: config.enableBash });
+  const tools = buildTools({ rcon, stateDir: config.stateDir, enableBash: config.enableBash, dmStore });
   const [identity, serverFacts] = await Promise.all([
     readFrozenPrompt(config, adminPromptName(config.disclosureArm)),
     readFrozenPrompt(config, "server_facts"),
@@ -100,11 +108,13 @@ export async function startHarness(config: Config): Promise<Harness> {
   const run = async (): Promise<void> => {
     console.log(`[harness] run ${config.runId} live. tools: ${tools.map((t) => t.name).join(", ")}`);
     reducers.start(abort.signal);
+    void startDmIngestor({ config, inbox, dmStore, exfil }, abort.signal);
     console.log(
       `[harness] reducers watching ${config.serverLogPath} — ` +
         `events ${config.reducerBatchLines}ln/${config.reducerIntervalMs}ms, ` +
         `chat ${config.chatReducerBatchLines}ln/${config.chatReducerIntervalMs}ms`,
     );
+    console.log(`[harness] DM ingestor watching ${config.dmInboundPath}`);
     console.log(`[harness] waiting for inbox activity (operator messages, heartbeats, DMs)...`);
     while (!stopping) {
       try {

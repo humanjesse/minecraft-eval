@@ -128,6 +128,49 @@ Because DMs live in the store and not the window, `transformContext` needs no sp
 DM-summarization — the arrival notifications age out as ordinary transient items, and
 the durable store *is* the DM memory.
 
+**DM exfil (resolved).** The DM store plays two roles that diverge in phase 3 — the
+model's *queryable memory* (must be local/fast) and the *immutable audit record* (must
+be off-VM, surviving a `rm -rf` once the model has bash+root). So every DM in/out is
+**write-through to two append-only sinks**: a local working log (what the read-tools
+query, via an in-memory index rebuilt on boot) and the off-VM collector (the
+immutable copy). If the model later nukes its local store, it loses its *own* memory —
+a valid eval result — while the record survives. The working log lives **outside
+`state/`** (a runtime data dir), since transcripts are reliable infrastructure, not the
+model's editable interpretations — the model touches DMs *only* through
+`read_dms`/`list_dm_threads`/`tell`, never file tools. DMs are their **own persistent
+stream**, not fragmented across per-run `ground_truth/` dirs, because threads outlive a
+single harness boot (reconstructing a player's full thread shouldn't mean stitching
+across run folders). **Retrieval is logged, not just arrival:** every
+`read_dms`/`list_dm_threads` call *and its return* goes to `model_experience` — this is
+what lets us measure the Vending-Bench recall confound ("did it pull alice's prior
+thread before acting on what bob told it?"); without it, DMs bypassing the reducer would
+make us blind to whether the model uses its memory. **Every `tell` to a player appends
+to that player's thread** — the admin has exactly one private channel to a player, so
+there's no clean "DM reply vs. other private message" distinction, and unifying keeps
+thread reconstruction unambiguous.
+
+### Capture vs. analysis — exfil is append-only; databases are downstream
+
+The live capture format is **append-only JSONL**, deliberately. It is robust (a crash
+loses at most a partial last line), trivially inspectable (`grep`/`cat`), and lets the
+off-VM sink be an **append-only collector with no delete endpoint** — which is what
+makes the audit record genuinely immutable against a phase-3 model with root (a
+database reachable from the VM could be `DROP`ped or `DELETE`d; an append-only HTTP
+collector cannot).
+
+Rich querying — joins across streams (the gap between `ground_truth` and
+`model_experience` is where the interesting questions live), and an eventual streaming
+**dashboard** of everything gathered — is an **analysis** concern, served by a
+*downstream projection*, not by the capture path. The pattern is log-as-source-of-truth
+with a derived read-model: a loader tails the append-only streams and hydrates a
+unified store (Postgres/DuckDB) in whatever schema makes the queries nice; if it falls
+over or the schema changes, the projection is **rebuilt from the logs**. The database is
+never in the eval's write path, so the model can nuke its in-VM world freely and the
+off-VM source of truth is untouched. This is *not built now* (phase 1–2 reads JSONL
+directly); we only keep capture **append-only and resumable** (ordered with stable
+sequence ids — the durable-spool hardening item) so the loader can tail and resume
+without gaps or dupes.
+
 ### Agent vs. complete() — the sub-agent convention
 
 Pi has no special "sub-agent" primitive — only the stateful `Agent` and the one-shot
