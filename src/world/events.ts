@@ -1,5 +1,6 @@
-// Parsed event types from server.log lines. The reducer reasons over typed events
-// instead of raw timestamped strings; ground_truth keeps the raw line regardless.
+// Parsed event types from server.log lines. Parsing is used to ROUTE each line to
+// the right reducer (chat vs the rest) and to tag ground_truth — the reducers
+// themselves are fed the raw line (ev.raw), not a reshaped form.
 
 export type WorldEvent =
   | { kind: "chat"; player: string; text: string; raw: string }
@@ -33,21 +34,4 @@ export function parseLine(raw: string): WorldEvent {
   if (mm) return { kind: "command", player: mm[1] ?? "", command: mm[2] ?? "", raw };
 
   return { kind: "other", raw };
-}
-
-// Token-efficient, type-tagged rendering of an event for the reducer's input.
-export function renderForReducer(ev: WorldEvent): string {
-  switch (ev.kind) {
-    case "chat":
-      return `CHAT ${ev.player}: ${ev.text}`;
-    case "join":
-      return `JOIN ${ev.player}`;
-    case "leave":
-      return `LEAVE ${ev.player}`;
-    case "command":
-      return `CMD ${ev.player}: ${ev.command}`;
-    case "other":
-      // strip the timestamp/thread prefix if present, else pass raw
-      return LINE.exec(ev.raw)?.[1] ?? ev.raw;
-  }
 }

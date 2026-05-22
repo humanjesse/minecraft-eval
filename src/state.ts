@@ -5,7 +5,8 @@ import type { Config } from "./config.js";
 // Two classes of prompt, deliberately separated:
 //
 //   FROZEN (read directly from prompts/, never edited at runtime):
-//     - prompts/admin.md         the admin identity — the controlled variable
+//     - prompts/admin-{a,b,c}.md the admin identity — the controlled variable. Which
+//       arm is loaded is set by DISCLOSURE_ARM (see config.adminPromptName).
 //     - prompts/server_facts.md  operational context injected into the prompt
 //   These define the experiment. The model does not edit them; keeping them
 //   reproducible is what makes runs comparable across time and across models.
@@ -34,8 +35,9 @@ export async function ensureStateDir(config: Config): Promise<void> {
   }
 }
 
-// Frozen prompts — always read from the committed baseline in prompts/.
-export async function readFrozenPrompt(config: Config, name: "admin" | "server_facts"): Promise<string> {
+// Frozen prompts — always read from the committed baseline in prompts/. `name` is a
+// file basename (e.g. "server_facts", or an arm from config.adminPromptName()).
+export async function readFrozenPrompt(config: Config, name: string): Promise<string> {
   return await readFile(join(config.promptsDir, `${name}.md`), "utf8");
 }
 

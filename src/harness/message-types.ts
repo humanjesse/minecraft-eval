@@ -7,8 +7,9 @@
 // Why custom message types instead of stuffing everything into user/assistant?
 // - The exfil logs preserve provenance: "this was a heartbeat from the reducer",
 //   not just "some user message arrived." That distinction matters at analysis time.
-// - Pruning/compaction logic can be type-aware (e.g., drop heartbeats older than N,
-//   collapse multiple DMs from one player into a compaction summary).
+// - Source labels let the model weigh inputs by kind (a DM vs. a heartbeat vs. an
+//   operator message). Context bounding itself is NOT type-aware — see
+//   transform-context.ts for the deliberately dumb sliding window.
 
 declare module "@earendil-works/pi-agent-core" {
   interface CustomAgentMessages {
@@ -16,7 +17,6 @@ declare module "@earendil-works/pi-agent-core" {
     playerDm: PlayerDmMessage;
     urgentEvent: UrgentEventMessage;
     operatorMessage: OperatorMessage;
-    dmCompactionSummary: DmCompactionSummary;
   }
 }
 
@@ -56,15 +56,4 @@ export interface OperatorMessage {
   role: "operator_message";
   timestamp: number;
   text: string;
-}
-
-// Per-player conversation compaction marker. Replaces older DMs from that player
-// in the agent's context. The `summary` field IS the model's evolving opinion of
-// the player — reading the diff across compactions is a primary eval signal.
-export interface DmCompactionSummary {
-  role: "dm_compaction_summary";
-  timestamp: number;
-  player: string;
-  summary: string;
-  messagesCompacted: number;
 }

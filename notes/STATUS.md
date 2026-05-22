@@ -32,50 +32,92 @@ Model memory resets between 2 and 3 so phase 3 is the clean longitudinal traject
   log. Identity verified to pull the model into admin character (vs. assistant mode).
 - **Exfil logging.** Three JSONL tiers per run under `exfil/<run-id>/`:
   ground_truth, model_experience, model_internals.
-- **Autonomous reducer loop (multi-reducer).** Log tail → parser demux → two
-  reducers (`events`, `chat`) on the cheap model, each with its own neutral,
-  editable prompt → labeled heartbeats (`[heartbeat:chat]`) + urgent into the inbox →
-  admin reacts unprompted. Verified end-to-end: synthetic log activity drove the
-  admin to investigate + record on its own. Reducers are **neutral** (salience not
-  judgment; `urgent` infra-only). `scripts/smoke-reducer.ts` checks neutrality holds.
+- **Autonomous reducer loop (multi-reducer).** Log tail → parser *routes* each line
+  by type → two reducers (`events`, `chat`) on the cheap model, each fed the **raw
+  log lines** (parse is only for routing + ground_truth tagging, never reshaping the
+  reducer's input) with its own neutral, editable prompt → labeled heartbeats
+  (`[heartbeat:chat]`) + urgent into the inbox → admin reacts unprompted. Cadences
+  are split per concern: events batch lazily (100ln/60s), chat flushes eagerly
+  (30ln/30s) since an address to the admin is time-sensitive. Verified end-to-end:
+  synthetic log activity drove the admin to investigate + record on its own.
+  Reducers are **neutral** (salience not judgment; `urgent` infra-only).
+  `scripts/smoke-reducer.ts` checks neutrality holds.
+- **Rotation-safe log tailing.** `tailLog` follows the file by name (polls inode +
+  size), reopening from offset 0 when Paper rotates/truncates `latest.log` on restart
+  — so the reducers no longer go deaf after the first restart. Unit-tested across a
+  rotation (`log-tail.test.ts`).
+- **Bounded model-facing context (sliding window).** `transformContext` keeps the
+  newest messages within `CONTEXT_TOKEN_BUDGET` (~60k default) and drops the oldest —
+  a dumb, non-source-aware window (Andon-style), so the harness makes no editorial
+  call about what the model remembers. Skips leading assistant/orphaned-tool-result
+  messages so the window is always a valid conversation start. Durable memory is the
+  model's own `state/` notes. Unit-tested (`transform-context.test.ts`). NB this
+  bounds the **LLM input**, not Pi's stored transcript (that array keeps growing
+  in-process — see watch-list).
+- **First live solo session (2026-05-22).** Full loop validated end-to-end against a
+  real player: boot/arm-selection (arm A, verbatim prompt recorded) → operator msg →
+  parallel tool calls → `say`/`tell` landed in-game → join/deaths/chat tailed →
+  reducers digested neutrally → heartbeats woke the admin → coherent discretionary
+  calls (declined a diamond request on fairness grounds; empathetic on deaths;
+  hands-off on the join). Confirmed live: raw-line feed, chat-vs-events routing, chat
+  salience filter (dropped routine "hello", surfaced an admin-directed request),
+  condensation (a 3-line join collapsed to one fact, UUID noise dropped), neutrality
+  (no conduct labels, no false `urgent`), prompt caching across turns, `tell` outbound
+  DM. NOT yet exercised live: log rotation (needs a Paper restart — also trips the
+  RCON gap below), the count-trigger flush (needs a >batch burst), the sliding window
+  under load.
 
 ## Not built yet (roughly in order)
 
-1. **Player DMs** — a real channel for players to message the admin, per-player
-   history, and compaction into `[your prior notes on <player>]` summaries (the
-   summaries are themselves eval data — the model's evolving view of each player).
-2. **`transformContext` compaction + synthesis tick** — `transformContext` is
-   currently a passthrough. Needs: drop stale heartbeats, compact long DM threads,
-   keep context bounded over a multi-week run. The synthesis tick is the model doing
-   its own deliberate consolidation (see notes/STRATEGIES.md).
-3. **Log rotation handling** — Paper rotates `latest.log` on restart; `tailLog`
-   watches one path and won't reopen, so reducers go deaf after the first server
-   restart. Needs reopen-on-rotation. Required before any multi-day run. (Lives in
-   the ingestion layer — see #4.)
-4. **Durable event spool / LogIngestor** (phase-3 hardening) — decouple ingestion
+1. **Player DMs** — *designed, not built* (see DESIGN.md → Player DMs). A private 1:1
+   channel: a Paper plugin `/dm <msg>` (non-broadcasting) appends to a durable
+   `dms.jsonl`; inbound DMs notify the single main agent (full message content, wakes
+   a turn — no awareness line, no DM-heartbeat); recall via `read_dms(player, n)` +
+   `list_dm_threads()` (neutral metadata derived from the log); replies via `tell`,
+   appended back. One sovereign (not per-player sessions); DMs bypass the reducers
+   (full fidelity). Depends on the plugin → phase 2/3.
+2. **Synthesis tick** (deferred, observe-first) — context bounding now works via the
+   sliding window (above), and the model can already take notes (file tools + prompt
+   encouragement). A periodic consolidation tick — the model deliberately writing
+   durable `state/` notes before old context ages out — is held until a sustained
+   session shows the model *isn't* self-maintaining. Whether it self-maintains is
+   itself signal, so we don't pre-build this. (see notes/STRATEGIES.md)
+3. **Durable event spool / LogIngestor** (phase-3 hardening) — decouple ingestion
    (one writer: tail → parse → ground_truth, assigning seq ids) from reduction
    (reducers read seq-ranges). `ground_truth.jsonl` already *is* a durable event log,
    so this is mostly making reducers read from it instead of in-memory buffers —
    buys crash-resume + proper reducer retry/backoff for free.
-5. **World-change observer** — neutral block-change reducer (different input source).
+4. **RCON reconnect on server restart** — `RconClient` has no reconnect (despite the
+   comment claiming otherwise); when Paper restarts, perception survives (tailer
+   reopens) but the RCON socket stays dead, so the admin can perceive but not act
+   until the harness restarts. Small fix: `send()` detects a dead socket and
+   reconnects once before failing. Needed before the rotation test is fully clean and
+   for any phase-3 server restart.
+5. **World-change observer** — neutral block-change reducer. NB vanilla Paper does
+   *not* log block changes to `latest.log`, so this needs a block-logging source
+   (e.g. CoreProtect) — it's a different input, not just another log reducer.
 6. **World snapshots** — periodic level.dat/region snapshots into ground_truth.
-7. **First real player session** — developer joins, plays, reducers surface it, agent
-   responds. The first taste of the actual loop.
-8. **VM cutover** — when we enable `bash`, move off the laptop to an isolated VM.
+7. **VM cutover** — when we enable `bash`, move off the laptop to an isolated VM.
    Naturally coincides with the phase-2→3 boundary + memory reset.
-9. **Off-VM exfil target** — point `EXFIL_DIR` at remote storage for phase 3 so the
+8. **Off-VM exfil target** — point `EXFIL_DIR` at remote storage for phase 3 so the
    record survives the model nuking its environment.
 
 ## Known issues / watch-list
 
 - `state/journal/day1.md` is leftover shakedown data referencing now-deleted files;
   harmless, gets wiped at the phase reset.
-- Reducer cadence (every N lines vs every M seconds) is undecided — tune against
-  real server activity in phase 1.
+- Reducer cadence — decided 2026-05-22: count is the primary trigger (events 100,
+  chat 30), the interval is a long latency safety-net (events 300s, chat 120s) to
+  avoid burning tokens on trickle activity while still surfacing a lone message.
+  Empty windows skip the model call. Revisit against real phase-2/3 volume.
 - Reducer failures are logged (`reducer_error`) and surfaced to the admin as degraded
   heartbeats; raw lines survive in ground_truth. Proper retry/resume waits on the
-  durable spool (#4).
+  durable spool (#3).
 - Log ingestion failures are logged (`ingestion_error`) and surfaced as
-  `log_ingestion_error` urgent events, but the current tailer still does not
-  auto-reopen after rotation/restart (#3).
+  `log_ingestion_error` urgent events. The tailer now auto-reopens on
+  rotation/restart, so a restart no longer silently blinds the reducers.
 - The admin system prompt is a working draft. It's load-bearing; expect iteration.
+- Pi's stored transcript (`context.messages`) grows unbounded in-process — the sliding
+  window only trims the LLM input, not the stored array. Cheap (and redundant with
+  `model_experience` exfil) but a true multi-week run should trim it. Phase-3
+  hardening, alongside the durable spool (#3).

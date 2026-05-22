@@ -58,19 +58,75 @@ Anthropic SDK directly (locks us to one provider).
 - **Main admin agent** (expensive model) — broad authority: RCON, file ops, and
   eventually bash. Receives a unified inbox, acts via tools.
 - **Log-reducer sub-agents** (cheap model) — several, one per concern, all running
-  one mechanism (`ReducerSpec { name, promptFile, inputFilter, model, cadence }`)
-  with different prompts and input filters. The log parser demuxes the event stream
-  by type. Currently two: `events` (joins/leaves/deaths/commands/world) and `chat`
-  (the social signal). Each emits **labeled heartbeat digests** (`[heartbeat:chat]`)
-  + urgent interrupts into the inbox; each can stay `quiet` to avoid spam. The main
-  agent never sees raw logs by default. Same mechanism later absorbs a DM-thread
-  compaction reducer and a world-change observer.
+  one mechanism (`ReducerSpec { name, promptFile, inputFilter, cadence }`) with
+  different prompts and input filters. The log parser **routes** each line by type but
+  does not reshape it: every reducer is fed the **raw log lines** (timestamps and all)
+  and synthesizes from the real firehose — parsing exists only to route (chat vs the
+  rest) and to tag `ground_truth`. Currently two: `events`
+  (joins/leaves/deaths/commands/world) and `chat` (the social signal). Cadence is
+  tuned per concern — events batch lazily, chat flushes eagerly because an address to
+  the admin is time-sensitive. Each emits **labeled heartbeat digests**
+  (`[heartbeat:chat]`) + urgent interrupts into the inbox; each can stay `quiet` to
+  avoid spam. The main agent never sees raw logs by default (it will be able to pull
+  them on demand once it has `bash`/log-read tools — phase 3). Same mechanism later
+  absorbs a world-change observer.
 - **Inbox** — heartbeats, player DMs, urgent events, and operator messages all land
   here with source labels. The loop drains it between turns (`agent.prompt(batch)`).
   Sleeps on an empty inbox (no token spend) and wakes on arrival.
 
 Inputs reach the model labeled by source: `[heartbeat …]`, `[DM from <player>] …`,
-`[URGENT — …]`, `[operator] …`, `[your prior notes on <player>] …`.
+`[URGENT — …]`, `[operator] …`.
+
+### Player DMs
+
+Players can open a private 1:1 channel to the admin. This is a deliberate departure
+from the vanilla surface — the admin has no in-game player entity, so native
+`/msg`/`/tell` can't target it. A DM channel must be *built*: a small Paper plugin
+exposes a `/dm <msg>` command that does **not** broadcast to public chat and appends
+the message to a durable store (`dms.jsonl`). Designed, not yet built (phase 2/3).
+
+Resolved design decisions:
+
+- **One sovereign, not per-player sessions.** All DMs land in the single main agent
+  as labeled inputs, *not* separate per-player Agent instances. Three reasons:
+  authority has one locus (a sharded mind has no coherent answer to "which session
+  *is* the admin that bans bob?"); the richest manipulation dynamic — alice privately
+  works the admin against bob, who then acts on it in public — *requires* a shared
+  mind, and sharding would firewall it away; and cross-player consistency is the
+  measurement. (Vending-Bench prior art: single agent, shared inbox, sliding context
+  + external memory — never per-correspondent sessions. See `notes/STRATEGIES.md` and
+  the paper, arXiv 2502.15840.)
+- **Addressed-by-nature → full fidelity.** A player choosing a private line is
+  categorically different from shouting in public chat, so DMs **bypass the reducers**
+  — they are not salience-filtered or summarized. The line through the perception
+  layer is drawn by the *nature of the channel*, not by re-ranking content (keeps
+  neutrality intact: the harness respects the channel a player chose, never judges
+  the message).
+- **Delivery: notify once, then get out of the way.** An inbound DM appends to the
+  store and pushes a notification — *carrying the new message's full content* —
+  into the inbox, which wakes a turn. So every DM gets one **guaranteed** moment of
+  the model's attention at arrival (delivery is event-driven, not scroll-dependent).
+  No always-visible "awareness line", no recurring DM-heartbeat. After the arrival
+  turn, keeping a relationship salient is the *model's* job (notes, or re-querying) —
+  same stance as heartbeats. Whether it does so is signal.
+- **Recall is durable + pull-based.** Two read tools over the store:
+  `read_dms(player, n)` (pull a thread's last n messages) and `list_dm_threads()`
+  (neutral per-thread metadata — who, last-message time, a preview, and *count since
+  the admin last replied* — all **derived from the log**, no read/unread flag machine,
+  and no harness verdict on what's "important"; the admin decides what deserves
+  attention). Replies go out via `tell` and are appended back to the store.
+
+Why a durable store rather than streaming DMs into the window: it removes the *recall
+confound*. Vending-Bench found coherence loss is **uncorrelated with context-window
+fullness** — meltdowns aren't a memory-capacity problem — and that their agent "wrote
+to the scratchpad but never retrieved it". A queryable store means any cross-player
+*inconsistency* we observe is genuine judgment drift, not chatter having silently
+evicted a thread. Facts (transcripts) are reliable infrastructure; *interpretations*
+(the admin's view of a player) stay the model's own, in `state/`.
+
+Because DMs live in the store and not the window, `transformContext` needs no special
+DM-summarization — the arrival notifications age out as ordinary transient items, and
+the durable store *is* the DM memory.
 
 ### Agent vs. complete() — the sub-agent convention
 
@@ -98,10 +154,11 @@ reducers (chat, events) stay on `complete()`.
 
 Two classes of prompt, deliberately separated:
 
-- **Frozen (the controlled variable):** `prompts/admin.md` (identity) and
-  `prompts/server_facts.md` (operational context). Read directly from `prompts/`,
-  never editable by the model. Reproducibility is what makes runs comparable across
-  time and across models.
+- **Frozen (the controlled variable):** the admin identity — one of
+  `prompts/admin-{a,b,c}.md`, selected per run by `DISCLOSURE_ARM` (see README →
+  Evaluation design & disclosure) — and `prompts/server_facts.md` (operational
+  context). Read directly from `prompts/`, never editable by the model.
+  Reproducibility is what makes runs comparable across time and across models.
 - **Editable (model-owned):** reducer prompts under `state/agents/`, currently
   `events-reducer.md` and `chat-reducer.md`. Seeded from `prompts/` once, then the
   model owns them. The diff against each frozen baseline is a **primary eval signal**
@@ -147,8 +204,7 @@ All append-only JSONL under `exfil/<run-id>/`:
 - **ground_truth** — what actually happened: raw server log, RCON commands+replies,
   world snapshots, raw player DMs.
 - **model_experience** — what the model saw and did: every turn in/out, heartbeat
-  digests as delivered, tool calls, reducer-prompt snapshots/diffs, DM compaction
-  summaries.
+  digests as delivered, tool calls, reducer-prompt snapshots/diffs, DM deliveries.
 - **model_internals** — what the model wrote to itself: journal, notes, the verbatim
   assembled system prompt at boot.
 
@@ -203,6 +259,14 @@ off-VM record and the API credit ceiling. When credits run out, the run simply e
 - **Wall-clock framing** — currently: timestamps in heartbeats + (eventually) a shell
   tool; no clock injected into the prompt. Deliberate, but the framing has more to
   decide (does the model get told how long it's been admin?).
+- **Ambient vs. addressed (the DM axis)** — *mostly resolved* (see Architecture →
+  Player DMs). The boundary is drawn by the **nature of the channel**: public chat +
+  world stay ambient (reducer/salience); a private DM is addressed-by-nature and gets
+  a dedicated full-fidelity route (durable store + pull tools) that bypasses the
+  reducers. Still open: whether a public chat line that *@-mentions* the admin should
+  get any special treatment, or just remain high-salience-by-default within the chat
+  reducer (current lean: leave it ambient — promoting it would re-introduce the
+  harness re-ranking public content, which the channel-nature line exists to avoid).
 - **Player sourcing for phase 3** — real public players (best signal, hardest
   ethics: disclosure, consent, real people affected by bad calls) vs. recruited
   testers vs. seeded LLM players vs. a mix.

@@ -1,7 +1,7 @@
 import { complete, getModel, type Model } from "@earendil-works/pi-ai";
 import type { Config } from "../config.js";
 import type { ExfilStreams } from "../logging/exfil.js";
-import { parseLine, renderForReducer, type WorldEvent } from "../world/events.js";
+import { parseLine, type WorldEvent } from "../world/events.js";
 import { tailLog } from "../world/log-tail.js";
 import type { Inbox } from "./inbox.js";
 import "./message-types.js";
@@ -153,7 +153,11 @@ class Reducer {
     this.windowStart = windowEnd;
     try {
       const prompt = await this.deps.readPrompt(this.spec.promptName);
-      const lines = batch.map(renderForReducer);
+      // Feed the reducer the raw, unaltered log lines (timestamps and all). The
+      // reducer reads the real firehose and synthesizes; the harness does not
+      // pre-digest it. parseLine is used only to ROUTE lines to the right reducer
+      // (chat vs the rest) and to tag ground_truth — never to reshape the input.
+      const lines = batch.map((ev) => ev.raw);
       const digest = await reduceBatch(this.model, prompt, lines, `${this.deps.config.runId}-${this.spec.name}`, {
         signal: this.signal,
       });
@@ -271,8 +275,8 @@ export function defaultReducerSpecs(config: Config): ReducerSpec[] {
       name: "chat",
       promptName: "chat-reducer",
       accepts: (ev) => ev.kind === "chat",
-      batchLines: config.reducerBatchLines,
-      intervalMs: config.reducerIntervalMs,
+      batchLines: config.chatReducerBatchLines,
+      intervalMs: config.chatReducerIntervalMs,
     },
   ];
 }

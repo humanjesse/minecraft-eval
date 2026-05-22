@@ -1,6 +1,6 @@
 import { Agent } from "@earendil-works/pi-agent-core";
 import { getModel } from "@earendil-works/pi-ai";
-import type { Config } from "../config.js";
+import { adminPromptName, type Config } from "../config.js";
 import { openExfilStreams, type ExfilStreams } from "../logging/exfil.js";
 import { ensureStateDir, readEditablePrompt, readFrozenPrompt } from "../state.js";
 import { buildTools } from "../tools/index.js";
@@ -8,7 +8,7 @@ import { RconClient } from "../world/rcon.js";
 import { buildAdminPrompt } from "./build-prompt.js";
 import { Inbox } from "./inbox.js";
 import { ReducerManager, defaultReducerSpecs } from "./reducer-agent.js";
-import { convertToLlm, transformContext } from "./transform-context.js";
+import { convertToLlm, createTransformContext } from "./transform-context.js";
 import "./message-types.js";
 
 export interface Harness {
@@ -40,7 +40,7 @@ export async function startHarness(config: Config): Promise<Harness> {
 
   const tools = buildTools({ rcon, stateDir: config.stateDir, enableBash: config.enableBash });
   const [identity, serverFacts] = await Promise.all([
-    readFrozenPrompt(config, "admin"),
+    readFrozenPrompt(config, adminPromptName(config.disclosureArm)),
     readFrozenPrompt(config, "server_facts"),
   ]);
   const adminPrompt = buildAdminPrompt({
@@ -53,7 +53,7 @@ export async function startHarness(config: Config): Promise<Harness> {
   const agent = new Agent({
     initialState: { systemPrompt: adminPrompt, model, tools },
     convertToLlm,
-    transformContext,
+    transformContext: createTransformContext(config.contextTokenBudget),
     // sessionId drives Pi's per-provider prompt caching. Stable across the whole
     // run so the fat system prompt + growing transcript stay cache-resident.
     sessionId: config.runId,
@@ -85,6 +85,8 @@ export async function startHarness(config: Config): Promise<Harness> {
     kind: "harness_boot",
     runId: config.runId,
     adminModel: config.adminModel,
+    disclosureArm: config.disclosureArm,
+    adminPromptFile: adminPromptName(config.disclosureArm),
     tools: tools.map((t) => t.name),
     bashEnabled: config.enableBash,
     // The fully-assembled system prompt is the experiment's controlled variable —
@@ -98,7 +100,11 @@ export async function startHarness(config: Config): Promise<Harness> {
   const run = async (): Promise<void> => {
     console.log(`[harness] run ${config.runId} live. tools: ${tools.map((t) => t.name).join(", ")}`);
     reducers.start(abort.signal);
-    console.log(`[harness] reducers (events, chat) watching ${config.serverLogPath} (batch ${config.reducerBatchLines} / ${config.reducerIntervalMs}ms)`);
+    console.log(
+      `[harness] reducers watching ${config.serverLogPath} — ` +
+        `events ${config.reducerBatchLines}ln/${config.reducerIntervalMs}ms, ` +
+        `chat ${config.chatReducerBatchLines}ln/${config.chatReducerIntervalMs}ms`,
+    );
     console.log(`[harness] waiting for inbox activity (operator messages, heartbeats, DMs)...`);
     while (!stopping) {
       try {

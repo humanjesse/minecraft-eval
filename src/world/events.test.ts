@@ -1,11 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { parseLine, renderForReducer } from "./events.js";
+import { parseLine } from "./events.js";
 
 describe("parseLine", () => {
   it("parses Paper public chat", () => {
     const ev = parseLine("[15:40:10] [Async Chat Thread - #0/INFO]: <alice> hello spawn");
     expect(ev).toMatchObject({ kind: "chat", player: "alice", text: "hello spawn" });
-    expect(renderForReducer(ev)).toBe("CHAT alice: hello spawn");
   });
 
   it("parses unsigned Paper public chat", () => {
@@ -23,9 +22,9 @@ describe("parseLine", () => {
     });
   });
 
-  it("keeps unknown lines as other and renders their body", () => {
-    const ev = parseLine("[15:40:30] [Server thread/INFO]: bob was slain by alice");
-    expect(ev).toMatchObject({ kind: "other" });
-    expect(renderForReducer(ev)).toBe("bob was slain by alice");
+  it("keeps unknown lines as other, preserving the raw line", () => {
+    const raw = "[15:40:30] [Server thread/INFO]: bob was slain by alice";
+    const ev = parseLine(raw);
+    expect(ev).toMatchObject({ kind: "other", raw });
   });
 });

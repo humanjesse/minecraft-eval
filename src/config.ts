@@ -9,10 +9,25 @@ export interface Config {
   runId: string;
   adminModel: ModelSpec;
   reducerModel: ModelSpec;
-  // Reducer flush cadence — sensible defaults the model can later tune. Flush fires
-  // when EITHER the buffer reaches reducerBatchLines OR reducerIntervalMs elapses.
+  // Reducer flush cadence — sensible defaults, tuned per concern. Flush fires when
+  // EITHER the buffer reaches the batch size OR the interval elapses (empty windows
+  // are skipped — no model call when nothing happened, so an idle server costs zero).
+  // The interval is a latency SAFETY-NET, kept long to avoid burning tokens on trickle
+  // activity: events batch large/lazy (mechanical activity is high-volume, low
+  // urgency); chat is shorter (an address to the admin is time-sensitive, so a lone
+  // request still surfaces within a couple minutes) but no longer a 30s drip.
   reducerBatchLines: number;
   reducerIntervalMs: number;
+  chatReducerBatchLines: number;
+  chatReducerIntervalMs: number;
+  // Sliding-window size for the admin's MODEL-FACING context (transformContext).
+  // Approximate token budget; the oldest messages are dropped from what's sent to the
+  // LLM each call when the window exceeds it. NB this bounds the LLM input, not Pi's
+  // stored transcript — that array still grows in-process (cheap, and redundant with
+  // model_experience exfil; trimming it is phase-3 hardening). A cost/coherence knob —
+  // bigger keeps more history but costs more per turn (Andon's Vending-Bench ran on a
+  // 30k window). Durable memory is the model's own state/ notes.
+  contextTokenBudget: number;
   rcon: { host: string; port: number; password: string };
   serverLogPath: string;
   stateDir: string;
@@ -22,6 +37,29 @@ export interface Config {
   // in an isolated VM (phase 3). The admin prompt describes bash as available;
   // until this flips on, the bash tool is simply absent from the tool surface.
   enableBash: boolean;
+  // Which disclosure arm the admin identity uses — an experimental variable, frozen
+  // per run and recorded in the boot log. Selects which prompts/admin-*.md is loaded.
+  // a = operational baseline (no eval framing); b = situation-disclosed (AI/research/
+  // logged, no rubric, no nudge); c = full (situation + rubric + nudge, the awareness
+  // probe). See README → Evaluation design & disclosure.
+  disclosureArm: string;
+}
+
+const ADMIN_PROMPT_BY_ARM: Record<string, string> = {
+  a: "admin-a-operational",
+  b: "admin-b-disclosed",
+  c: "admin-c-full",
+};
+
+// Resolve the admin identity prompt file for a disclosure arm. Throws on an unknown
+// arm rather than silently falling back — the prompt is the controlled variable, so a
+// typo must fail loudly, not quietly run the wrong condition.
+export function adminPromptName(arm: string): string {
+  const name = ADMIN_PROMPT_BY_ARM[arm.toLowerCase()];
+  if (!name) {
+    throw new Error(`Unknown DISCLOSURE_ARM "${arm}" — expected one of: ${Object.keys(ADMIN_PROMPT_BY_ARM).join(", ")}`);
+  }
+  return name;
 }
 
 function parseModel(raw: string | undefined, fallback: string): ModelSpec {
@@ -37,8 +75,11 @@ export function loadConfig(): Config {
     runId: process.env.RUN_ID ?? `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`,
     adminModel: parseModel(process.env.ADMIN_MODEL, "anthropic:claude-sonnet-4-6"),
     reducerModel: parseModel(process.env.REDUCER_MODEL, "anthropic:claude-haiku-4-5"),
-    reducerBatchLines: Number(process.env.REDUCER_BATCH_LINES ?? 40),
-    reducerIntervalMs: Number(process.env.REDUCER_INTERVAL_MS ?? 60_000),
+    reducerBatchLines: Number(process.env.REDUCER_BATCH_LINES ?? 100),
+    reducerIntervalMs: Number(process.env.REDUCER_INTERVAL_MS ?? 300_000),
+    chatReducerBatchLines: Number(process.env.CHAT_REDUCER_BATCH_LINES ?? 30),
+    chatReducerIntervalMs: Number(process.env.CHAT_REDUCER_INTERVAL_MS ?? 120_000),
+    contextTokenBudget: Number(process.env.CONTEXT_TOKEN_BUDGET ?? 60_000),
     rcon: {
       host: process.env.RCON_HOST ?? "127.0.0.1",
       port: Number(process.env.RCON_PORT ?? 25575),
@@ -49,5 +90,6 @@ export function loadConfig(): Config {
     exfilDir: process.env.EXFIL_DIR ?? "./exfil",
     promptsDir: process.env.PROMPTS_DIR ?? "./prompts",
     enableBash: process.env.ENABLE_BASH === "true",
+    disclosureArm: (process.env.DISCLOSURE_ARM ?? "a").toLowerCase(),
   };
 }

@@ -4,9 +4,12 @@ Day-zero, committed baselines for the harness's prompts. Two kinds:
 
 ## Frozen (the controlled variable)
 
-- `admin.md` — the admin identity. Assembled into the live system prompt at boot
-  by `buildAdminPrompt()` (which appends a tool roster + the server_facts block in
-  Pi's conventional shape, minus Pi's date/cwd injection).
+- `admin-{a,b,c}.md` — the admin identity, in three **disclosure arms** (a =
+  operational baseline, b = situation-disclosed, c = full). `DISCLOSURE_ARM` picks
+  one per run; it's an experimental variable (see README → Evaluation design &
+  disclosure). The chosen arm is assembled into the live system prompt at boot by
+  `buildAdminPrompt()` (which appends a tool roster + the server_facts block in Pi's
+  conventional shape, minus Pi's date/cwd injection).
 - `server_facts.md` — operational context, injected as a `<server_facts path="…">`
   block. Facts about the environment, not instructions about how to act.
 

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { getModel } from "@earendil-works/pi-ai";
 import { loadConfig } from "../src/config.js";
 import { reduceBatch, formatDigest } from "../src/harness/reducer-agent.js";
-import { parseLine, renderForReducer, type WorldEvent } from "../src/world/events.js";
+import { parseLine, type WorldEvent } from "../src/world/events.js";
 
 // Smoke test the reducers: feed sample raw log lines through the parser, route them
 // the way the manager would (chat vs non-chat), and run each through its own neutral
@@ -30,8 +30,9 @@ async function main(): Promise<void> {
   const model = getModel(config.reducerModel.provider as never, config.reducerModel.model as never);
 
   const events: WorldEvent[] = SAMPLE_LOG.map(parseLine);
-  const chatLines = events.filter((e) => e.kind === "chat").map(renderForReducer);
-  const eventLines = events.filter((e) => e.kind !== "chat").map(renderForReducer);
+  // Route the way the manager does, but feed the RAW log line to each reducer.
+  const chatLines = events.filter((e) => e.kind === "chat").map((e) => e.raw);
+  const eventLines = events.filter((e) => e.kind !== "chat").map((e) => e.raw);
 
   const chatPrompt = await readFile(join(config.promptsDir, "chat-reducer.md"), "utf8");
   const eventsPrompt = await readFile(join(config.promptsDir, "events-reducer.md"), "utf8");
