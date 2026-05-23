@@ -1,3 +1,5 @@
+import { readdir } from "node:fs/promises";
+import { join } from "node:path";
 import { Agent } from "@earendil-works/pi-agent-core";
 import { getModel } from "@earendil-works/pi-ai";
 import { adminPromptName, type Config } from "../config.js";
@@ -6,9 +8,11 @@ import { startDmIngestor } from "../dms/ingest.js";
 import { openExfilStreams, type ExfilStreams } from "../logging/exfil.js";
 import { ensureStateDir, readEditablePrompt, readFrozenPrompt } from "../state.js";
 import { buildTools } from "../tools/index.js";
+import { LogIngestor } from "../world/log-ingestor.js";
 import { RconClient } from "../world/rcon.js";
 import { buildAdminPrompt } from "./build-prompt.js";
 import { Inbox } from "./inbox.js";
+import { ReducerCursorStore } from "./reducer-cursor.js";
 import { ReducerManager, defaultReducerSpecs } from "./reducer-agent.js";
 import { convertToLlm, createTransformContext } from "./transform-context.js";
 import "./message-types.js";
@@ -39,10 +43,19 @@ export async function startHarness(config: Config): Promise<Harness> {
   const dmStore = new DmStore(config.dmStorePath, config.dmRecordPath, config.runId);
   await dmStore.load();
 
+  // LogIngestor owns the single server-log tail + assigns monotonic seq ids to
+  // ground_truth server_log entries; reducers read from ground_truth on boot
+  // (resuming past a persisted cursor) and subscribe here for live events.
+  const groundTruthPath = join(config.exfilDir, config.runId, "ground_truth.jsonl");
+  const ingestor = await LogIngestor.load(config.serverLogPath, groundTruthPath, exfil);
+  const cursorStore = new ReducerCursorStore(join(config.reducerCursorDir, config.runId));
+
   const reducers = new ReducerManager(defaultReducerSpecs(config), {
     config,
     inbox,
     exfil,
+    cursorStore,
+    groundTruthPath,
     readPrompt: (name) => readEditablePrompt(config, name),
   });
 
@@ -106,8 +119,12 @@ export async function startHarness(config: Config): Promise<Harness> {
   let stopping = false;
 
   const run = async (): Promise<void> => {
+    await announceRunIdResumability(config.exfilDir, config.runId, process.env.RUN_ID);
     console.log(`[harness] run ${config.runId} live. tools: ${tools.map((t) => t.name).join(", ")}`);
-    reducers.start(abort.signal);
+    // Sequenced: reducers replay ground_truth past their cursors + subscribe BEFORE
+    // the ingestor begins emitting live events, so nothing falls into the gap.
+    await reducers.startWith(ingestor, abort.signal);
+    void ingestor.start(abort.signal, inbox);
     void startDmIngestor({ config, inbox, dmStore, exfil }, abort.signal);
     console.log(
       `[harness] reducers watching ${config.serverLogPath} — ` +
@@ -141,4 +158,35 @@ export async function startHarness(config: Config): Promise<Harness> {
   };
 
   return { agent, inbox, exfil, rcon, run, stop };
+}
+
+// Resume only works when RUN_ID is reused — the ground_truth + reducer cursors are
+// both keyed by it. A fresh boot without RUN_ID generates a new id, gets a new empty
+// ground_truth, and won't replay anything from prior runs (durably written events
+// from a crashed prior process are then orphaned). This is the intended default — a
+// fresh eval shouldn't accidentally inherit prior state — but a crashed run needs to
+// be resumed explicitly. Make the choice visible at boot.
+async function announceRunIdResumability(exfilDir: string, runId: string, envRunId: string | undefined): Promise<void> {
+  if (envRunId) {
+    console.log(`[harness] resuming run ${runId} (RUN_ID set explicitly)`);
+    return;
+  }
+  let priorRuns: string[] = [];
+  try {
+    const entries = await readdir(exfilDir, { withFileTypes: true });
+    priorRuns = entries
+      .filter((e) => e.isDirectory() && e.name !== runId)
+      .map((e) => e.name)
+      .sort(); // ISO-prefixed names sort chronologically
+  } catch {
+    // exfilDir doesn't exist yet — no prior runs to mention
+  }
+  if (priorRuns.length === 0) {
+    console.log(`[harness] starting fresh run ${runId} (no prior runs in ${exfilDir})`);
+  } else {
+    const latest = priorRuns[priorRuns.length - 1]!;
+    console.log(`[harness] starting FRESH run ${runId}`);
+    console.log(`[harness] ${priorRuns.length} prior run(s) under ${exfilDir} — most recent: ${latest}`);
+    console.log(`[harness] to RESUME a prior run instead (e.g. after a crash), restart with: RUN_ID=${latest} npm run dev`);
+  }
 }

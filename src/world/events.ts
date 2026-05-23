@@ -7,6 +7,11 @@ export type WorldEvent =
   | { kind: "join"; player: string; raw: string }
   | { kind: "leave"; player: string; raw: string }
   | { kind: "command"; player: string; command: string; raw: string }
+  // Block changes are emitted by the AdminDm plugin via getLogger().info, so they
+  // land in latest.log alongside chat/join/leave. We route on the "[AdminDm] block_"
+  // prefix only — the action and fields stay on ev.raw for the world reducer to read
+  // (same neutrality stance as chat: parsing routes, never reshapes).
+  | { kind: "block_change"; raw: string }
   | { kind: "other"; raw: string };
 
 // Matches the body after `[HH:MM:SS] [Thread/LEVEL]: `. Tolerant of the varied
@@ -32,6 +37,10 @@ export function parseLine(raw: string): WorldEvent {
 
   mm = /^(\w+) issued server command: (.*)$/.exec(body);
   if (mm) return { kind: "command", player: mm[1] ?? "", command: mm[2] ?? "", raw };
+
+  // Plugin-emitted block-change lines. Other [AdminDm] logger output (e.g. the
+  // onEnable banner) falls through to "other" and is harmless noise on ground_truth.
+  if (body.startsWith("[AdminDm] block_")) return { kind: "block_change", raw };
 
   return { kind: "other", raw };
 }

@@ -36,8 +36,29 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
           content: [{ type: "text", text: `[operator] ${m.text}` }],
           timestamp: m.timestamp,
         }];
-      default:
+      case "bashExecution":
+      case "custom":
+      case "branchSummary":
+      case "compactionSummary":
+        // Pi's @earendil-works/pi-agent-core index re-exports harness/messages.js,
+        // which augments CustomAgentMessages with these four built-in roles. They're
+        // emitted by AgentHarness (compaction, branch summaries, its bash tool); we
+        // use the lower-level Agent, not AgentHarness, so they shouldn't appear in
+        // our transcripts. If they ever do (e.g. via a Pi internals change), drop —
+        // they're not part of this harness's message model. Listed explicitly so the
+        // exhaustiveness guard below still catches OUR custom roles being added
+        // without a handler.
         return [];
+      default: {
+        // Exhaustiveness guard: every AgentMessage role must be handled above. If a
+        // new role is added (custom in message-types.ts, or a new built-in surfaced
+        // by a Pi upgrade) without a case here, this line stops compiling — better
+        // than silently dropping the message from the LLM input at runtime, which
+        // would be invisible in the exfil.
+        const _exhaustive: never = m;
+        void _exhaustive;
+        return [];
+      }
     }
   });
 }

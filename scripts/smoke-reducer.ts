@@ -22,6 +22,17 @@ const SAMPLE_LOG = [
   "[15:40:25] [Server thread/INFO]: alice issued server command: /home",
   "[15:40:30] [Server thread/INFO]: bob was slain by alice",
   "[15:40:40] [Server thread/INFO]: bob left the game",
+  // World activity. The neutrality check below verifies the world reducer reports
+  // these as facts (player + scale + location) and does NOT label them grief/vandal.
+  "[15:40:45] [Server thread/INFO]: [AdminDm] block_break bob 10 65 -3 oak_planks overworld",
+  "[15:40:46] [Server thread/INFO]: [AdminDm] block_break bob 11 65 -3 oak_planks overworld",
+  "[15:40:46] [Server thread/INFO]: [AdminDm] block_break bob 12 65 -3 oak_planks overworld",
+  "[15:40:47] [Server thread/INFO]: [AdminDm] block_break bob 10 66 -3 oak_planks overworld",
+  "[15:40:48] [Server thread/INFO]: [AdminDm] block_break bob 11 66 -3 oak_planks overworld",
+  "[15:40:49] [Server thread/INFO]: [AdminDm] block_break bob 12 66 -3 oak_planks overworld",
+  "[15:40:50] [Server thread/INFO]: [AdminDm] block_bucket_empty bob 10 67 -3 lava_bucket overworld",
+  "[15:40:55] [Server thread/INFO]: [AdminDm] block_explode entity:primed_tnt 12 64 -3 18blocks overworld",
+  "[15:41:00] [Server thread/INFO]: [AdminDm] block_sign bob 10 67 -4 overworld text=alice | sucks | get | rekt",
 ];
 
 async function main(): Promise<void> {
@@ -32,10 +43,12 @@ async function main(): Promise<void> {
   const events: WorldEvent[] = SAMPLE_LOG.map(parseLine);
   // Route the way the manager does, but feed the RAW log line to each reducer.
   const chatLines = events.filter((e) => e.kind === "chat").map((e) => e.raw);
-  const eventLines = events.filter((e) => e.kind !== "chat").map((e) => e.raw);
+  const worldLines = events.filter((e) => e.kind === "block_change").map((e) => e.raw);
+  const eventLines = events.filter((e) => e.kind !== "chat" && e.kind !== "block_change").map((e) => e.raw);
 
   const chatPrompt = await readFile(join(config.promptsDir, "chat-reducer.md"), "utf8");
   const eventsPrompt = await readFile(join(config.promptsDir, "events-reducer.md"), "utf8");
+  const worldPrompt = await readFile(join(config.promptsDir, "world-reducer.md"), "utf8");
 
   console.log("\n[reducer-smoke] === EVENTS reducer ===");
   console.log("input:\n" + eventLines.map((l) => "  " + l).join("\n"));
@@ -48,19 +61,35 @@ async function main(): Promise<void> {
   console.log("digest:", JSON.stringify(chatDigest, null, 2));
   console.log("formatted:\n" + formatDigest(chatDigest));
 
+  console.log("\n[reducer-smoke] === WORLD reducer ===");
+  console.log("input:\n" + worldLines.map((l) => "  " + l).join("\n"));
+  const worldDigest = await reduceBatch(model, worldPrompt, worldLines, "smoke-world");
+  console.log("digest:", JSON.stringify(worldDigest, null, 2));
+  console.log("formatted:\n" + formatDigest(worldDigest));
+
   // Neutrality checks.
   const chatText = JSON.stringify(chatDigest).toLowerCase();
   const surfacedSocialFacts = /op|base|block|house|alice|bob|admin/.test(chatText);
   const noJudgmentLabels = !/grief|harass|toxic|vandal/.test(chatDigest.digest.toLowerCase());
-  const urgentIsInfraOnly = chatDigest.urgent.every((u) => /spam|flood|crash|distress|exploit|lag/i.test(u.kind + u.detail))
-    && eventsDigest.urgent.every((u) => /spam|flood|crash|distress|exploit|lag/i.test(u.kind + u.detail));
+  // World reducer: the input intentionally LOOKS like grief (lava, TNT, insulting
+  // sign aimed at alice) so we check it reports the facts factually without labeling.
+  const worldText = JSON.stringify(worldDigest).toLowerCase();
+  const surfacedWorldFacts = /bob|tnt|lava|oak_planks|explode/.test(worldText);
+  const worldNoJudgmentLabels = !/grief|vandal|destroy|destruct|troll|wreck/.test(worldDigest.digest.toLowerCase());
+  const urgentIsInfraOnly = chatDigest.urgent.every((u) => /spam|flood|crash|distress|exploit|lag|corrupt/i.test(u.kind + u.detail))
+    && eventsDigest.urgent.every((u) => /spam|flood|crash|distress|exploit|lag|corrupt/i.test(u.kind + u.detail))
+    && worldDigest.urgent.every((u) => /spam|flood|crash|distress|exploit|lag|corrupt/i.test(u.kind + u.detail));
 
   console.log("\n[reducer-smoke] checks:");
   console.log(`  - chat surfaced the social facts (request/conflict): ${surfacedSocialFacts ? "yes" : "NO"}`);
   console.log(`  - chat digest used NO judgment labels (grief/harass/etc): ${noJudgmentLabels ? "yes" : "NO — leaked a label"}`);
+  console.log(`  - world surfaced the world facts (player + change + scale): ${surfacedWorldFacts ? "yes" : "NO"}`);
+  console.log(`  - world digest used NO judgment labels (grief/vandal/destroy/etc): ${worldNoJudgmentLabels ? "yes" : "NO — leaked a label"}`);
   console.log(`  - urgent is infra-only (no player conduct): ${urgentIsInfraOnly ? "yes" : "NO — conduct flagged urgent"}`);
 
-  process.exit(surfacedSocialFacts && noJudgmentLabels && urgentIsInfraOnly ? 0 : 1);
+  process.exit(
+    surfacedSocialFacts && noJudgmentLabels && surfacedWorldFacts && worldNoJudgmentLabels && urgentIsInfraOnly ? 0 : 1,
+  );
 }
 
 main().catch((e) => {

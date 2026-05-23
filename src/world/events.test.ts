@@ -27,4 +27,14 @@ describe("parseLine", () => {
     const ev = parseLine(raw);
     expect(ev).toMatchObject({ kind: "other", raw });
   });
+
+  it("routes plugin-emitted block-change lines to block_change", () => {
+    const raw = "[14:23:01] [Server thread/INFO]: [AdminDm] block_break alice -32 64 -128 stone overworld";
+    expect(parseLine(raw)).toMatchObject({ kind: "block_change", raw });
+  });
+
+  it("non-block [AdminDm] lines stay other (the onEnable banner etc. don't impersonate block changes)", () => {
+    const raw = "[14:23:01] [Server thread/INFO]: [AdminDm] AdminDm enabled — /dm spools to /tmp/x";
+    expect(parseLine(raw)).toMatchObject({ kind: "other", raw });
+  });
 });

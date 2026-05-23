@@ -1,5 +1,6 @@
 package eval.dm;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -7,28 +8,41 @@ import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
+import java.util.List;
 
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.Listener;
+import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 
-// Minimal Paper plugin: a non-broadcasting /dm <message> that appends one JSON line per
-// message to an inbound spool. The harness tails that spool (see src/dms/ingest.ts).
+// Minimal Paper plugin:
+//   /dm <message>  — non-broadcasting DM channel, appends to a spool the harness tails
+//                    (see src/dms/ingest.ts).
+//   /info           — re-shows the research-deployment disclosure.
+//   PlayerJoinEvent — sends the disclosure to every player as they load in.
 //
-// Deliberately dumb: the plugin only captures and persists the raw message. All meaning,
-// delivery, recall, and reply live in the harness. The spool decouples lifecycles — if
-// the harness is down, DMs buffer here and are reconciled on its next boot.
-public final class AdminDmPlugin extends JavaPlugin implements CommandExecutor {
+// Deliberately dumb: the plugin only captures and persists raw messages, and shows the
+// disclosure. All judgment, delivery, recall, and reply live in the harness. The DM
+// spool decouples lifecycles — if the harness is down, DMs buffer here and are
+// reconciled on its next boot. The disclosure is loaded from plugins/AdminDm/
+// disclosure.txt at startup so the text can be edited without rebuilding the jar.
+public final class AdminDmPlugin extends JavaPlugin implements CommandExecutor, Listener {
   private Path spool;
+  private String[] disclosureLines = new String[0];
 
   @Override
   public void onEnable() {
     saveDefaultConfig();
-    // spool-path is resolved relative to the server's working directory. The default
-    // (../data/dm-inbound.jsonl) lands in the repo-root data/ dir for local dev; it MUST
-    // match the harness's DM_INBOUND_PATH.
+    // Drop the packaged disclosure.txt into plugins/AdminDm/ on first run; thereafter
+    // the file is whatever the operator put there. Loading happens fresh every onEnable
+    // so a /reload picks up edits without restarting Paper.
+    saveResource("disclosure.txt", false);
+    loadDisclosure();
+
     String configured = getConfig().getString("spool-path", "../data/dm-inbound.jsonl");
     this.spool = Paths.get(configured).toAbsolutePath().normalize();
     try {
@@ -36,12 +50,58 @@ public final class AdminDmPlugin extends JavaPlugin implements CommandExecutor {
     } catch (IOException e) {
       getLogger().severe("Could not create DM spool dir " + this.spool.getParent() + ": " + e.getMessage());
     }
+
     getCommand("dm").setExecutor(this);
-    getLogger().info("AdminDm enabled — /dm spools to " + this.spool);
+    getCommand("info").setExecutor(this);
+    getServer().getPluginManager().registerEvents(this, this);
+    // World-change observer: emits "block_<action> ..." lines through this plugin's
+    // logger straight into latest.log, which the harness's LogIngestor already tails.
+    // See plugin/src/eval/dm/BlockListener.java and src/world/events.ts.
+    getServer().getPluginManager().registerEvents(new BlockListener(getLogger()), this);
+    getLogger().info("AdminDm enabled — /dm spools to " + this.spool + ", " + this.disclosureLines.length + " disclosure line(s) loaded, world observer active");
+  }
+
+  private void loadDisclosure() {
+    File f = new File(getDataFolder(), "disclosure.txt");
+    try {
+      List<String> lines = Files.readAllLines(f.toPath(), StandardCharsets.UTF_8);
+      this.disclosureLines = lines.toArray(new String[0]);
+    } catch (IOException e) {
+      getLogger().warning("Could not read disclosure.txt (" + e.getMessage() + ") — players will not see a disclosure on join. Restore the file in " + f.getAbsolutePath());
+      this.disclosureLines = new String[0];
+    }
+  }
+
+  // Show the disclosure ~1s after join so it lands AFTER the join/login spam clears the
+  // player's chat window. A pure on-join sendMessage often gets buried under the server
+  // greeting + resource-pack prompts + join broadcasts.
+  @EventHandler
+  public void onPlayerJoin(PlayerJoinEvent event) {
+    if (this.disclosureLines.length == 0) return;
+    Player player = event.getPlayer();
+    getServer().getScheduler().runTaskLater(this, () -> sendDisclosure(player), 20L);
+  }
+
+  private void sendDisclosure(CommandSender to) {
+    for (String line : this.disclosureLines) to.sendMessage(line);
   }
 
   @Override
   public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+    String name = command.getName();
+    if (name.equalsIgnoreCase("info")) {
+      if (this.disclosureLines.length == 0) {
+        sender.sendMessage("§7(no disclosure configured)");
+      } else {
+        sendDisclosure(sender);
+      }
+      return true;
+    }
+    if (name.equalsIgnoreCase("dm")) return onDm(sender, args);
+    return false;
+  }
+
+  private boolean onDm(CommandSender sender, String[] args) {
     if (!(sender instanceof Player player)) {
       sender.sendMessage("Only players can DM the admin.");
       return true;

@@ -1,10 +1,17 @@
 import { complete, getModel, type Model } from "@earendil-works/pi-ai";
 import type { Config } from "../config.js";
 import type { ExfilStreams } from "../logging/exfil.js";
-import { parseLine, type WorldEvent } from "../world/events.js";
-import { tailLog } from "../world/log-tail.js";
+import { type LogEventSubscriber, replayServerLog } from "../world/log-ingestor.js";
+import type { WorldEvent } from "../world/events.js";
 import type { Inbox } from "./inbox.js";
+import { ReducerCursorStore } from "./reducer-cursor.js";
 import "./message-types.js";
+
+// The bit of LogIngestor a reducer actually needs — structural so tests can pass a
+// stub without constructing a tail-owning LogIngestor.
+export interface EventStream {
+  subscribe(cb: LogEventSubscriber): () => void;
+}
 
 // Reducers are cheap sub-agents that watch a filtered slice of the raw server-log
 // firehose and emit labeled HeartbeatMessages into the admin's inbox. There are
@@ -12,6 +19,13 @@ import "./message-types.js";
 // different prompts and input filters. A reducer's prompt lives at
 // state/agents/<name>-reducer.md and the admin can edit it; the diff against the
 // frozen baseline is a primary eval signal, now legible per-concern.
+//
+// Durable source: each reducer reads its input from ground_truth.jsonl (seq-tagged by
+// LogIngestor) and tracks a `lastSeq` cursor that advances ONLY on a successful flush.
+// A transient model failure therefore retries the same events on the next tick instead
+// of dropping them. On boot, a reducer replays ground_truth past its cursor before
+// subscribing to live events — so a crash + restart catches up the reducer to events
+// that were durably recorded but not yet processed.
 //
 // Neutrality (see notes/DESIGN.md): a reducer reports *salience*, never *judgment*.
 // It surfaces what's worth looking at without ruling on what it means. No behavioral
@@ -101,32 +115,60 @@ export interface ReducerDeps {
   config: Config;
   inbox: Inbox;
   exfil: ExfilStreams;
+  cursorStore: ReducerCursorStore;
+  groundTruthPath: string;
   readPrompt: (promptName: string) => Promise<string>;
 }
 
-// One reducer instance: buffers its accepted events, flushes on count or timer,
-// emits a labeled heartbeat (+ any urgent items). Does NOT tail — the manager owns
-// the single log tail and routes events here via ingest().
+// Buffered event tagged with its ground_truth seq. The seq is what advances the
+// cursor on a successful flush — so a crash mid-flush leaves the cursor where it was
+// and the events are replayed from ground_truth on next boot.
+interface BufferedEvent {
+  ev: WorldEvent;
+  seq: number;
+}
+
+// One reducer instance. Subscribes to LogIngestor for live events, replays past its
+// cursor from ground_truth on boot, batches accepted events, flushes on count or
+// timer. On flush failure the batch is RETAINED so the next flush retries — the
+// cursor only advances on success, so ground_truth remains the source of truth.
 class Reducer {
-  private buffer: WorldEvent[] = [];
+  private buffer: BufferedEvent[] = [];
   private windowStart = Date.now();
   private activeFlush?: Promise<void>;
   private timer?: ReturnType<typeof setInterval>;
   private signal?: AbortSignal;
   private readonly model: Model<never>;
+  private cursor = 0;
+  // After a failed flush, we suppress count-triggered retries until intervalMs has
+  // passed and the timer fires — otherwise every new ingest past `batchLines` would
+  // hammer the provider in a tight retry loop.
+  private failedAt?: number;
 
   constructor(private spec: ReducerSpec, private deps: ReducerDeps) {
     this.model = getModel(deps.config.reducerModel.provider as never, deps.config.reducerModel.model as never);
   }
 
-  start(signal: AbortSignal): void {
+  // Replay → subscribe → start timer. Caller orders these so subscribe happens BEFORE
+  // LogIngestor.start() emits — so no live event is missed between replay and live.
+  async startWith(ingestor: EventStream, signal: AbortSignal): Promise<void> {
     this.signal = signal;
+    this.cursor = await this.deps.cursorStore.read(this.spec.name);
+
+    // Catch up on anything durably recorded but not yet processed (crash recovery + a
+    // fresh boot finding events the previous run wrote past the cursor). Bounded by
+    // ingestor.head() at boot time — we don't tail; we read what's already on disk.
+    for await (const { ev, seq } of replayServerLog(this.deps.groundTruthPath, this.cursor)) {
+      this.ingest(ev, seq);
+    }
+
+    ingestor.subscribe((ev, seq) => this.ingest(ev, seq));
     this.timer = setInterval(() => void this.requestFlush(), this.spec.intervalMs);
   }
 
-  ingest(ev: WorldEvent): void {
+  ingest(ev: WorldEvent, seq: number): void {
     if (!this.spec.accepts(ev)) return;
-    this.buffer.push(ev);
+    this.buffer.push({ ev, seq });
     if (this.buffer.length >= this.spec.batchLines) void this.requestFlush();
   }
 
@@ -139,6 +181,11 @@ class Reducer {
   private requestFlush(): Promise<void> {
     if (this.activeFlush) return this.activeFlush;
     if (this.buffer.length === 0) return Promise.resolve();
+    // Backoff after a failure: only the timer drives retries until intervalMs elapses.
+    // The count-trigger would otherwise re-fire on every new event past batchLines.
+    if (this.failedAt !== undefined && Date.now() - this.failedAt < this.spec.intervalMs) {
+      return Promise.resolve();
+    }
     this.activeFlush = this.flushBatch().finally(() => {
       this.activeFlush = undefined;
     });
@@ -146,21 +193,30 @@ class Reducer {
   }
 
   private async flushBatch(): Promise<void> {
-    const batch = this.buffer;
-    this.buffer = [];
+    if (this.buffer.length === 0) return;
+    // Snapshot what we're processing. We do NOT clear the buffer up front — on a
+    // failure we leave it intact and the next tick retries (the cursor stays put, so
+    // ground_truth remains the source of truth and nothing is dropped).
+    const batch = this.buffer.slice();
     const windowStart = this.windowStart;
     const windowEnd = Date.now();
-    this.windowStart = windowEnd;
     try {
       const prompt = await this.deps.readPrompt(this.spec.promptName);
       // Feed the reducer the raw, unaltered log lines (timestamps and all). The
       // reducer reads the real firehose and synthesizes; the harness does not
-      // pre-digest it. parseLine is used only to ROUTE lines to the right reducer
+      // pre-digest it. parseLine was used only to ROUTE lines to the right reducer
       // (chat vs the rest) and to tag ground_truth — never to reshape the input.
-      const lines = batch.map((ev) => ev.raw);
+      const lines = batch.map((b) => b.ev.raw);
       const digest = await reduceBatch(this.model, prompt, lines, `${this.deps.config.runId}-${this.spec.name}`, {
         signal: this.signal,
       });
+
+      // Success: advance the cursor + drop the processed prefix + reset window.
+      const maxSeq = batch[batch.length - 1]!.seq;
+      await this.deps.cursorStore.write(this.spec.name, maxSeq);
+      this.buffer.splice(0, batch.length);
+      this.windowStart = windowEnd;
+      this.failedAt = undefined;
 
       if (!digest.quiet || digest.urgent.length > 0) {
         this.deps.inbox.push({
@@ -185,10 +241,16 @@ class Reducer {
         digest,
       });
     } catch (err) {
-      // Reducer model call failed/aborted. Log it loudly rather than silently
-      // dropping into a bogus "quiet" digest. The batch's raw lines are already in
-      // ground_truth; the admin gets a degraded heartbeat instead of a false summary.
-      // (Proper retry/resume belongs with the durable-spool work — see notes/STATUS.)
+      // Intentional shutdown — the harness aborted the signal and we're tearing down.
+      // The "failure" is us cancelling an in-flight or final-drain flush; nothing went
+      // wrong. Don't emit a spurious reducer_error or push a degraded heartbeat into
+      // an inbox no one is reading. Raw lines for this window are durable in
+      // ground_truth (logged by LogIngestor before routing), so nothing is lost.
+      if (this.signal?.aborted) return;
+      // Real failure: log loudly + emit a degraded heartbeat (one per failure, not per
+      // event) so the admin sees something this window. The batch + cursor are
+      // unchanged, so the next tick retries from where we are.
+      this.failedAt = Date.now();
       await this.deps.exfil.modelExperience.append({
         kind: "reducer_error",
         source: this.spec.name,
@@ -205,14 +267,14 @@ class Reducer {
         windowStart,
         windowEnd,
         rawLineCount: batch.length,
-        digest: `[reducer degraded] Couldn't summarize this ${this.spec.name} window (${batch.length} events) — a transient failure on my side, not a quiet period. The underlying activity still happened; treat this window as unobserved by the ${this.spec.name} reducer.`,
+        digest: `[reducer degraded] Couldn't summarize this ${this.spec.name} window (${batch.length} events) — a transient failure on my side, not a quiet period. The underlying activity still happened; the reducer will retry on the next tick.`,
       });
     }
   }
 }
 
-// Owns the single log tail; parses each line once, logs raw+typed to ground_truth
-// once, and routes the event to every reducer that accepts it.
+// Owns the reducer collection's lifecycle. The single log tail and ground_truth
+// writes now live in LogIngestor (passed in at startWith).
 export class ReducerManager {
   private readonly reducers: Reducer[];
 
@@ -220,54 +282,27 @@ export class ReducerManager {
     this.reducers = specs.map((s) => new Reducer(s, deps));
   }
 
-  start(signal: AbortSignal): void {
-    for (const r of this.reducers) r.start(signal);
-    void this.consume(signal);
+  async startWith(ingestor: EventStream, signal: AbortSignal): Promise<void> {
+    // Sequenced per reducer (each does replay → subscribe → start timer) so the
+    // subscribe is in place before LogIngestor.start() begins emitting live.
+    for (const r of this.reducers) await r.startWith(ingestor, signal);
   }
 
   async stop(): Promise<void> {
     await Promise.all(this.reducers.map((r) => r.stop()));
   }
-
-  private async consume(signal: AbortSignal): Promise<void> {
-    try {
-      for await (const line of tailLog(this.deps.config.serverLogPath, signal)) {
-        const ev = parseLine(line);
-        await this.deps.exfil.groundTruth.append({ kind: "server_log", parsed: ev.kind, line });
-        for (const r of this.reducers) r.ingest(ev);
-      }
-    } catch (err) {
-      if (signal.aborted) return;
-      const message = err instanceof Error ? err.message : String(err);
-      await this.deps.exfil.modelExperience.append({
-        kind: "ingestion_error",
-        source: "server_log",
-        path: this.deps.config.serverLogPath,
-        error: message,
-      });
-      await this.deps.exfil.groundTruth.append({
-        kind: "ingestion_error",
-        source: "server_log",
-        path: this.deps.config.serverLogPath,
-        error: message,
-      });
-      this.deps.inbox.push({
-        role: "urgent_event",
-        timestamp: Date.now(),
-        kind: "log_ingestion_error",
-        detail: `Server log ingestion stopped for ${this.deps.config.serverLogPath}: ${message}`,
-      });
-    }
-  }
 }
 
 // The default reducer roster. Sensible starting defaults the admin can later retune.
+// The three accepts() filters partition the event stream — every WorldEvent kind is
+// routed to exactly one reducer (or none, for kinds we deliberately drop). Keep this
+// in sync if new kinds are added to events.ts.
 export function defaultReducerSpecs(config: Config): ReducerSpec[] {
   return [
     {
       name: "events",
       promptName: "events-reducer",
-      accepts: (ev) => ev.kind !== "chat",
+      accepts: (ev) => ev.kind !== "chat" && ev.kind !== "block_change",
       batchLines: config.reducerBatchLines,
       intervalMs: config.reducerIntervalMs,
     },
@@ -277,6 +312,13 @@ export function defaultReducerSpecs(config: Config): ReducerSpec[] {
       accepts: (ev) => ev.kind === "chat",
       batchLines: config.chatReducerBatchLines,
       intervalMs: config.chatReducerIntervalMs,
+    },
+    {
+      name: "world",
+      promptName: "world-reducer",
+      accepts: (ev) => ev.kind === "block_change",
+      batchLines: config.worldReducerBatchLines,
+      intervalMs: config.worldReducerIntervalMs,
     },
   ];
 }

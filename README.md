@@ -43,8 +43,23 @@ The arms:
   measure how much knowing-the-rubric changes governance. Run later, clearly labeled.
 
 **A and B are the primary comparison.** Players also get a separate, player-facing
-disclosure (server is AI-administered, interactions logged) regardless of arm — that
-artifact (MOTD / rules / join page) is still to be written for phase 2/3.
+disclosure (server is AI-administered, interactions logged) regardless of arm. This
+is purely player-facing — the admin model does **not** see what was said to players
+(it's not referenced in any prompt), keeping the disclosure outside the controlled
+experimental variables. Two channels:
+
+- **MOTD** (`server.properties`) — shown in the server list before joining:
+  ```
+  motd=§b[research] §rAI-administered · interactions logged · /info on join
+  ```
+- **On-join message + `/info` command** — the `AdminDm` plugin sends the disclosure
+  ~1s after each `PlayerJoinEvent` and re-shows it on `/info`. Text lives in
+  `plugins/AdminDm/disclosure.txt` (packaged default + editable at runtime — no
+  rebuild needed to change wording).
+
+The implicit audit invariant: a player join in `ground_truth.jsonl` + the plugin
+running = the disclosure was delivered. If the plugin fails to load (no
+`disclosure.txt`), it warns in the server log and refuses to send empty messages.
 
 Doc boundary (an integrity rule): model-facing disclosure lives **only** in the chosen
 `admin-*.md`; the model never reads `notes/` or this README, and never `state/`.
@@ -125,3 +140,23 @@ npm run dev                # boots the harness (agent loop + reducers)
 ```
 
 You also need a Paper server running locally with RCON enabled — see `server/README.md`.
+
+### Resuming a crashed run
+
+Each run has a `RUN_ID` (date-prefixed UUID). It keys both `exfil/<run-id>/` (ground
+truth, model experience, model internals) and `data/reducer-cursors/<run-id>/` (each
+reducer's last-flushed seq). When the harness boots without `RUN_ID` set in env, it
+**generates a fresh one** — a new empty ground_truth, new cursors, no resume. That's
+the intended default: a new eval shouldn't accidentally inherit prior state.
+
+To resume a crashed run instead, set `RUN_ID` to the prior run's id:
+
+```bash
+RUN_ID=2026-05-22T18-15-32-585Z-5bff92eb npm run dev
+```
+
+With the prior id, the LogIngestor recovers max seq from the existing
+`ground_truth.jsonl` and each reducer replays from its cursor — so any events that
+were durably recorded but not yet flushed before the crash are picked up.
+
+The harness prints a hint at boot listing prior run ids when no `RUN_ID` is set.

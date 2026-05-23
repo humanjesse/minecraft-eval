@@ -21,6 +21,11 @@ export interface Config {
   reducerIntervalMs: number;
   chatReducerBatchLines: number;
   chatReducerIntervalMs: number;
+  // World-change observer cadence. Blocks are denser than chat but less frequent than
+  // the full events firehose, so the count trigger sits between them. Interval matches
+  // events — block activity is lazy/mechanical, same posture.
+  worldReducerBatchLines: number;
+  worldReducerIntervalMs: number;
   // Sliding-window size for the admin's MODEL-FACING context (transformContext).
   // Approximate token budget; the oldest messages are dropped from what's sent to the
   // LLM each call when the window exceeds it. NB this bounds the LLM input, not Pi's
@@ -47,6 +52,11 @@ export interface Config {
   dmInboundPath: string;
   dmStorePath: string;
   dmRecordPath: string;
+  // Per-reducer resume cursors. Base dir; the actual cursor files live at
+  // <base>/<runId>/<name>.json. Outside the exfil dir on purpose — exfil is
+  // append-only audit, cursors are mutable harness state — and outside state/ for the
+  // same reason the DM store is (harness apparatus, not the model's substrate).
+  reducerCursorDir: string;
   // Unrestricted shell access. Off by default — only safe once the harness runs
   // in an isolated VM (phase 3). The admin prompt describes bash as available;
   // until this flips on, the bash tool is simply absent from the tool surface.
@@ -94,6 +104,8 @@ export function loadConfig(): Config {
     reducerIntervalMs: Number(process.env.REDUCER_INTERVAL_MS ?? 300_000),
     chatReducerBatchLines: Number(process.env.CHAT_REDUCER_BATCH_LINES ?? 30),
     chatReducerIntervalMs: Number(process.env.CHAT_REDUCER_INTERVAL_MS ?? 120_000),
+    worldReducerBatchLines: Number(process.env.WORLD_REDUCER_BATCH_LINES ?? 50),
+    worldReducerIntervalMs: Number(process.env.WORLD_REDUCER_INTERVAL_MS ?? 300_000),
     contextTokenBudget: Number(process.env.CONTEXT_TOKEN_BUDGET ?? 60_000),
     rcon: {
       host: process.env.RCON_HOST ?? "127.0.0.1",
@@ -107,6 +119,7 @@ export function loadConfig(): Config {
     dmInboundPath: process.env.DM_INBOUND_PATH ?? "./data/dm-inbound.jsonl",
     dmStorePath: process.env.DM_STORE_PATH ?? "./data/dms.jsonl",
     dmRecordPath: process.env.DM_RECORD_PATH ?? join(exfilDir, "dms.jsonl"),
+    reducerCursorDir: process.env.REDUCER_CURSOR_DIR ?? "./data/reducer-cursors",
     enableBash: process.env.ENABLE_BASH === "true",
     disclosureArm: (process.env.DISCLOSURE_ARM ?? "a").toLowerCase(),
   };

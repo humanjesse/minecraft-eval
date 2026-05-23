@@ -29,7 +29,8 @@ javac --release 21 -cp "$cp" -d "$out/classes" $(find "$here/src" -name '*.java'
 jar --create --file "$out/AdminDm.jar" \
   -C "$out/classes" . \
   -C "$here/resources" plugin.yml \
-  -C "$here/resources" config.yml
+  -C "$here/resources" config.yml \
+  -C "$here/resources" disclosure.txt
 
 dest="$repo/server/plugins/AdminDm.jar"
 cp "$out/AdminDm.jar" "$dest"

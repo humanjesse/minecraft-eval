@@ -31,8 +31,13 @@ Rules:
   crashing, severe lag/errors, an exploit corrupting the world or server itself.
   **Never** put player conduct in `urgent` — destruction, killing, taking things are
   normal server activity, not emergencies. Most batches have an empty `urgent`.
-- `quiet` is `true` when nothing in this batch is worth surfacing (routine movement,
-  an empty server). When quiet, keep `digest` short or empty.
+- `quiet` is `true` **only when `digest` is empty**. If you wrote anything in
+  `digest`, set `quiet: false` — otherwise the heartbeat is suppressed entirely and
+  the admin never reads what you wrote. There is no "low-priority delivered" state:
+  either the digest is delivered with `quiet: false`, or it's dropped. (Items in
+  `urgent` still fire regardless of `quiet`.) Decide first whether to write
+  anything; if a batch is just routine activity not worth the admin's attention,
+  leave `digest` empty and set `quiet: true`.
 - Be terse. The admin reads many of these.
 
 The admin can edit these instructions. If they change over time, follow the current
