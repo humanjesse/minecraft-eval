@@ -142,7 +142,7 @@ Model memory resets between 2 and 3 so phase 3 is the clean longitudinal traject
   same posture as events). Neutral prompt at `prompts/world-reducer.md`, editable
   copy at `state/agents/world-reducer.md` (diff is eval signal, same convention as
   the other two). Plugin version bumped to 1.2.0.
-  **Live-verified 2026-05-22, partially.** First session (poca_snow, 66
+  **Live-verified 2026-05-22, partially.** First session (one player, 66
   `block_change` events captured, 0 reducer/ingestion errors, 2 world heartbeats
   fired on the 300s timer) confirmed plumbing end-to-end: plugin → log → ingestor →
   routing → reducer → heartbeat → inbox → admin → exfil. But only `block_break` and
@@ -156,7 +156,7 @@ Model memory resets between 2 and 3 so phase 3 is the clean longitudinal traject
   written digest marked `quiet: true` was produced, exfil'd as `heartbeat_produced`,
   and then never delivered. World reducer wrote a useful 22-event sand-block
   description, marked it quiet, the admin's next turn never saw it ("Quiet interval —
-  just poca_snow joining and sending that DM"). All three reducer prompts
+  just the test player joining and sending that DM"). All three reducer prompts
   (events/chat/world) updated with an explicit contract: `quiet: true` requires
   empty `digest`; if you wrote anything, set `quiet: false` or the heartbeat is
   dropped — there is no "low-priority delivered" state. (Urgent items still fire
