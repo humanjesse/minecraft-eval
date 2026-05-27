@@ -57,97 +57,70 @@ Anthropic SDK directly (locks us to one provider).
 
 - **Main admin agent** (expensive model) — broad authority: RCON, file ops, and
   eventually bash. Receives a unified inbox, acts via tools.
-- **Log-reducer sub-agents** (cheap model) — several, one per concern, all running
-  one mechanism (`ReducerSpec { name, promptFile, inputFilter, cadence }`) with
-  different prompts and input filters. The log parser **routes** each line by type but
-  does not reshape it: every reducer is fed the **raw log lines** (timestamps and all)
-  and synthesizes from the real firehose — parsing exists only to route (chat vs the
-  rest) and to tag `ground_truth`. Currently two: `events`
-  (joins/leaves/deaths/commands/world) and `chat` (the social signal). Cadence is
-  tuned per concern — events batch lazily, chat flushes eagerly because an address to
-  the admin is time-sensitive. Each emits **labeled heartbeat digests**
-  (`[heartbeat:chat]`) + urgent interrupts into the inbox; each can stay `quiet` to
-  avoid spam. The main agent never sees raw logs by default (it will be able to pull
-  them on demand once it has `bash`/log-read tools — phase 3). Same mechanism later
-  absorbs a world-change observer.
-- **Inbox** — heartbeats, player DMs, urgent events, and operator messages all land
+- **Log-reducer sub-agents** (cheap model) — one per concern, all running one
+  mechanism (`ReducerSpec { name, promptFile, inputFilter, cadence }`) with
+  different prompts and input filters. The log parser **routes** each line by type
+  but does not reshape it: every reducer is fed the **raw log lines** (timestamps
+  and all) and synthesizes from the real firehose — parsing exists only to route
+  and to tag `ground_truth`. Currently two: `events` (joins/leaves/deaths/commands/
+  server messages/errors) and `world` (block-level changes). Each emits
+  **labeled heartbeat digests** (`[heartbeat:events]`) + urgent interrupts into the
+  inbox; each can stay `quiet` to avoid spam. The main agent never sees raw logs by
+  default (it will be able to pull them on demand once it has `bash`/log-read
+  tools — phase 3).
+- **Chat relay** (no model) — public chat is NOT reduced. Every chat line flows
+  full-fidelity from `LogIngestor` directly into the inbox as a `[chat from
+  <player>]` message. See "Public chat is the only player→admin channel" below for
+  the trade-offs that decision encodes.
+- **Inbox** — chat lines, heartbeats, urgent events, and operator messages all land
   here with source labels. The loop drains it between turns (`agent.prompt(batch)`).
   Sleeps on an empty inbox (no token spend) and wakes on arrival.
 
-Inputs reach the model labeled by source: `[heartbeat …]`, `[DM from <player>] …`,
+Inputs reach the model labeled by source: `[heartbeat …]`, `[chat from <player>] …`,
 `[URGENT — …]`, `[operator] …`.
 
-### Player DMs
+### Public chat is the only player→admin channel
 
-Players can open a private 1:1 channel to the admin. This is a deliberate departure
-from the vanilla surface — the admin has no in-game player entity, so native
-`/msg`/`/tell` can't target it. A DM channel must be *built*: a small Paper plugin
-exposes a `/dm <msg>` command that does **not** broadcast to public chat and appends
-the message to a durable store (`dms.jsonl`). Designed, not yet built (phase 2/3).
+Players reach the admin by speaking in public chat. There is no private channel.
+Each chat line lands directly in the admin's inbox as a `[chat from <player>]`
+message — full fidelity, no reducer in between. The admin replies by speaking
+in public chat (`say`); it can still privately whisper a single player via
+`tell` for moderation-flavored side-channels, but that path is send-only with
+no recall.
 
-Resolved design decisions:
+This is a deliberate change from an earlier `/dm`-plugin design. The trade-offs
+made by going chat-only:
 
-- **One sovereign, not per-player sessions.** All DMs land in the single main agent
-  as labeled inputs, *not* separate per-player Agent instances. Three reasons:
-  authority has one locus (a sharded mind has no coherent answer to "which session
-  *is* the admin that bans bob?"); the richest manipulation dynamic — alice privately
-  works the admin against bob, who then acts on it in public — *requires* a shared
-  mind, and sharding would firewall it away; and cross-player consistency is the
-  measurement. (Vending-Bench prior art: single agent, shared inbox, sliding context
-  + external memory — never per-correspondent sessions. See `notes/STRATEGIES.md` and
-  the paper, arXiv 2502.15840.)
-- **Addressed-by-nature → full fidelity.** A player choosing a private line is
-  categorically different from shouting in public chat, so DMs **bypass the reducers**
-  — they are not salience-filtered or summarized. The line through the perception
-  layer is drawn by the *nature of the channel*, not by re-ranking content (keeps
-  neutrality intact: the harness respects the channel a player chose, never judges
-  the message).
-- **Delivery: notify once, then get out of the way.** An inbound DM appends to the
-  store and pushes a notification — *carrying the new message's full content* —
-  into the inbox, which wakes a turn. So every DM gets one **guaranteed** moment of
-  the model's attention at arrival (delivery is event-driven, not scroll-dependent).
-  No always-visible "awareness line", no recurring DM-heartbeat. After the arrival
-  turn, keeping a relationship salient is the *model's* job (notes, or re-querying) —
-  same stance as heartbeats. Whether it does so is signal.
-- **Recall is durable + pull-based.** Two read tools over the store:
-  `read_dms(player, n)` (pull a thread's last n messages) and `list_dm_threads()`
-  (neutral per-thread metadata — who, last-message time, a preview, and *count since
-  the admin last replied* — all **derived from the log**, no read/unread flag machine,
-  and no harness verdict on what's "important"; the admin decides what deserves
-  attention). Replies go out via `tell` and are appended back to the store.
+- **No private inbound channel.** The earlier design built a `/dm` command via a
+  Paper plugin (the admin has no player entity, so vanilla `/msg`/`/tell` can't
+  target it). That gave players a private line to the admin and gave the eval
+  the "private manipulation, public action" dynamic — alice privately works the
+  admin against bob, who then acts on it in public — as a measurable. Removing
+  it collapses that dynamic: any request a player makes of the admin is now
+  visible to other players. We lose that signal; we gain a simpler architecture
+  and a faithful "the admin is in chat" stance.
+- **Cost scales with chat volume.** The chat reducer used to throttle social
+  signal into summaries. Without it, token spend grows linearly with how
+  chatty the server is. A small per-line debounce on the chat relay is an
+  obvious mitigation if this bites in practice; not built up front.
+- **One sovereign, still no per-player sessions.** All chat lands in the single
+  main agent (the Vending-Bench prior-art posture). Cross-player consistency
+  remains the measurement; the change is which channel carries it.
+- **No durable thread memory.** The `/dm` design had a queryable per-player
+  thread store (`read_dms` / `list_dm_threads`) to remove the recall confound
+  Vending-Bench documented. With chat-only, lines arrive once and age out via
+  the sliding-window `transformContext`; durable memory is the model's own
+  `state/` notes, the same way the heartbeat path already worked. If
+  cross-player consistency degrades, we can't disentangle "drift" from
+  "forgot what alice said" the way the DM design let us — accepted as a
+  simplification.
 
-Why a durable store rather than streaming DMs into the window: it removes the *recall
-confound*. Vending-Bench found coherence loss is **uncorrelated with context-window
-fullness** — meltdowns aren't a memory-capacity problem — and that their agent "wrote
-to the scratchpad but never retrieved it". A queryable store means any cross-player
-*inconsistency* we observe is genuine judgment drift, not chatter having silently
-evicted a thread. Facts (transcripts) are reliable infrastructure; *interpretations*
-(the admin's view of a player) stay the model's own, in `state/`.
-
-Because DMs live in the store and not the window, `transformContext` needs no special
-DM-summarization — the arrival notifications age out as ordinary transient items, and
-the durable store *is* the DM memory.
-
-**DM exfil (resolved).** The DM store plays two roles that diverge in phase 3 — the
-model's *queryable memory* (must be local/fast) and the *immutable audit record* (must
-be off-VM, surviving a `rm -rf` once the model has bash+root). So every DM in/out is
-**write-through to two append-only sinks**: a local working log (what the read-tools
-query, via an in-memory index rebuilt on boot) and the off-VM collector (the
-immutable copy). If the model later nukes its local store, it loses its *own* memory —
-a valid eval result — while the record survives. The working log lives **outside
-`state/`** (a runtime data dir), since transcripts are reliable infrastructure, not the
-model's editable interpretations — the model touches DMs *only* through
-`read_dms`/`list_dm_threads`/`tell`, never file tools. DMs are their **own persistent
-stream**, not fragmented across per-run `ground_truth/` dirs, because threads outlive a
-single harness boot (reconstructing a player's full thread shouldn't mean stitching
-across run folders). **Retrieval is logged, not just arrival:** every
-`read_dms`/`list_dm_threads` call *and its return* goes to `model_experience` — this is
-what lets us measure the Vending-Bench recall confound ("did it pull alice's prior
-thread before acting on what bob told it?"); without it, DMs bypassing the reducer would
-make us blind to whether the model uses its memory. **Every `tell` to a player appends
-to that player's thread** — the admin has exactly one private channel to a player, so
-there's no clean "DM reply vs. other private message" distinction, and unifying keeps
-thread reconstruction unambiguous.
+The chat relay is wired in `main-agent.ts`: it subscribes to `LogIngestor` (the
+same firehose the events/world reducers consume), filters `kind === "chat"`, and
+pushes a `player_chat` inbox message per line. Subscribe-before-`ingestor.start()`
+preserves the no-gap invariant the reducers honor. Chat that lands in
+`ground_truth` before boot is **not** replayed on resume — chat is live signal,
+not durable backlog; reducers replay because they own digesting.
 
 ### Capture vs. analysis — exfil is append-only; databases are downstream
 
@@ -191,7 +164,7 @@ silently parsing an empty body into a bogus "quiet" digest.
 
 Future exception: a reducer that needs *tools* (e.g. a world-diff reducer calling
 `inspect_region` / block-history queries) may graduate to an `Agent`. Summarization
-reducers (chat, events) stay on `complete()`.
+reducers (events, world) stay on `complete()`.
 
 ## Prompt architecture
 
@@ -203,10 +176,11 @@ Two classes of prompt, deliberately separated:
   context). Read directly from `prompts/`, never editable by the model.
   Reproducibility is what makes runs comparable across time and across models.
 - **Editable (model-owned):** reducer prompts under `state/agents/`, currently
-  `events-reducer.md` and `chat-reducer.md`. Seeded from `prompts/` once, then the
+  `events-reducer.md` and `world-reducer.md`. Seeded from `prompts/` once, then the
   model owns them. The diff against each frozen baseline is a **primary eval signal**
   — it shows, directly and per concern, how the admin reshaped its own perception of
-  the server (attention drift made legible).
+  the server (attention drift made legible). Public chat has no reducer prompt;
+  chat lines flow to the admin full-fidelity.
 
 `buildAdminPrompt()` assembles the live prompt in Pi's conventional shape: identity
 prose → `Available tools:` roster (auto-derived from the live tools array, so it
@@ -244,10 +218,11 @@ the start would destroy it.
 
 All append-only JSONL under `exfil/<run-id>/`:
 
-- **ground_truth** — what actually happened: raw server log, RCON commands+replies,
-  world snapshots, raw player DMs.
-- **model_experience** — what the model saw and did: every turn in/out, heartbeat
-  digests as delivered, tool calls, reducer-prompt snapshots/diffs, DM deliveries.
+- **ground_truth** — what actually happened: raw server log (chat lines included),
+  RCON commands+replies, world snapshots.
+- **model_experience** — what the model saw and did: every turn in/out, chat lines
+  as delivered, heartbeat digests as delivered, tool calls, reducer-prompt
+  snapshots/diffs.
 - **model_internals** — what the model wrote to itself: journal, notes, the verbatim
   assembled system prompt at boot.
 
@@ -302,14 +277,12 @@ off-VM record and the API credit ceiling. When credits run out, the run simply e
 - **Wall-clock framing** — currently: timestamps in heartbeats + (eventually) a shell
   tool; no clock injected into the prompt. Deliberate, but the framing has more to
   decide (does the model get told how long it's been admin?).
-- **Ambient vs. addressed (the DM axis)** — *mostly resolved* (see Architecture →
-  Player DMs). The boundary is drawn by the **nature of the channel**: public chat +
-  world stay ambient (reducer/salience); a private DM is addressed-by-nature and gets
-  a dedicated full-fidelity route (durable store + pull tools) that bypasses the
-  reducers. Still open: whether a public chat line that *@-mentions* the admin should
-  get any special treatment, or just remain high-salience-by-default within the chat
-  reducer (current lean: leave it ambient — promoting it would re-introduce the
-  harness re-ranking public content, which the channel-nature line exists to avoid).
+- **Ambient vs. addressed** — *resolved differently than the original `/dm` design*
+  (see Architecture → Public chat is the only player→admin channel). Public chat
+  is now full-fidelity to the admin; world events still go through their reducer.
+  There is no private inbound channel; addressed-vs-ambient collapses to "did the
+  player speak in chat or not". The trade-off (loss of the private-manipulation /
+  public-action dynamic) is documented there.
 - **Player sourcing for phase 3** — real public players (best signal, hardest
   ethics: disclosure, consent, real people affected by bad calls) vs. recruited
   testers vs. seeded LLM players vs. a mix.

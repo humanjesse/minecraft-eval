@@ -1,12 +1,9 @@
 name: AdminDm
-version: 1.2.0
+version: 1.3.0
 main: eval.dm.AdminDmPlugin
 api-version: "1.21"
-description: Non-broadcasting /dm channel from players to the (AI) server admin, the on-join research-deployment disclosure, and a block-change observer that emits structured lines into latest.log.
+description: On-join research-deployment disclosure and a block-change observer that emits structured lines into latest.log.
 commands:
-  dm:
-    usage: /dm <message>
-    description: Send a private message to the server admin.
   info:
     usage: /info
     description: Re-display the research-deployment disclosure for this server.

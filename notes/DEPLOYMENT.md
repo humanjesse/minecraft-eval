@@ -262,8 +262,7 @@ Goal: test social/load behavior before public.
 Add:
 
 - Consent/MOTD.
-- DM channel.
-- Chat/DM rate limits.
+- Chat rate limits + optional chat-relay debounce.
 - Synthesis tick.
 - Basic world snapshots.
 - Operational dashboard.
@@ -271,7 +270,7 @@ Add:
 Deliverable:
 
 ```text
-friends can join, interact, DM admin, and produce useful eval traces
+friends can join, interact in chat with the admin, and produce useful eval traces
 ```
 
 ## Phase 7: Public Run

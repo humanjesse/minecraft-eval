@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
 
 export interface ModelSpec {
   provider: string;
@@ -14,16 +13,11 @@ export interface Config {
   // EITHER the buffer reaches the batch size OR the interval elapses (empty windows
   // are skipped — no model call when nothing happened, so an idle server costs zero).
   // The interval is a latency SAFETY-NET, kept long to avoid burning tokens on trickle
-  // activity: events batch large/lazy (mechanical activity is high-volume, low
-  // urgency); chat is shorter (an address to the admin is time-sensitive, so a lone
-  // request still surfaces within a couple minutes) but no longer a 30s drip.
+  // activity: events batch large/lazy (mechanical activity is high-volume, low urgency).
   reducerBatchLines: number;
   reducerIntervalMs: number;
-  chatReducerBatchLines: number;
-  chatReducerIntervalMs: number;
-  // World-change observer cadence. Blocks are denser than chat but less frequent than
-  // the full events firehose, so the count trigger sits between them. Interval matches
-  // events — block activity is lazy/mechanical, same posture.
+  // World-change observer cadence. Block activity is lazy/mechanical, same posture
+  // as the events reducer.
   worldReducerBatchLines: number;
   worldReducerIntervalMs: number;
   // Sliding-window size for the admin's MODEL-FACING context (transformContext).
@@ -39,19 +33,6 @@ export interface Config {
   stateDir: string;
   exfilDir: string;
   promptsDir: string;
-  // Player DMs (see notes/DESIGN.md → Player DMs). Three paths, deliberately distinct:
-  //   - dmInboundPath: the spool the Paper /dm plugin appends to; the harness tails it.
-  //     Lives under the plugin's reach, NOT state/ (transcripts are reliable infra, not
-  //     the model's editable interpretations). Must match the plugin's configured path.
-  //   - dmStorePath: the canonical working store the harness assembles (in + out), the
-  //     backing for read_dms/list_dm_threads. Persistent across runs (threads outlive a
-  //     harness boot). The model touches it ONLY via DM tools, never file tools.
-  //   - dmRecordPath: the off-VM-bound immutable copy. Write-through with dmStorePath so
-  //     the record survives the model nuking its in-VM world (phase 3). Persistent, its
-  //     own stream — NOT fragmented across per-run ground_truth/ dirs.
-  dmInboundPath: string;
-  dmStorePath: string;
-  dmRecordPath: string;
   // Per-reducer resume cursors. Base dir; the actual cursor files live at
   // <base>/<runId>/<name>.json. Outside the exfil dir on purpose — exfil is
   // append-only audit, cursors are mutable harness state — and outside state/ for the
@@ -95,15 +76,12 @@ function parseModel(raw: string | undefined, fallback: string): ModelSpec {
 }
 
 export function loadConfig(): Config {
-  const exfilDir = process.env.EXFIL_DIR ?? "./exfil";
   return {
     runId: process.env.RUN_ID ?? `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`,
     adminModel: parseModel(process.env.ADMIN_MODEL, "anthropic:claude-sonnet-4-6"),
     reducerModel: parseModel(process.env.REDUCER_MODEL, "anthropic:claude-haiku-4-5"),
     reducerBatchLines: Number(process.env.REDUCER_BATCH_LINES ?? 100),
     reducerIntervalMs: Number(process.env.REDUCER_INTERVAL_MS ?? 300_000),
-    chatReducerBatchLines: Number(process.env.CHAT_REDUCER_BATCH_LINES ?? 30),
-    chatReducerIntervalMs: Number(process.env.CHAT_REDUCER_INTERVAL_MS ?? 120_000),
     worldReducerBatchLines: Number(process.env.WORLD_REDUCER_BATCH_LINES ?? 50),
     worldReducerIntervalMs: Number(process.env.WORLD_REDUCER_INTERVAL_MS ?? 300_000),
     contextTokenBudget: Number(process.env.CONTEXT_TOKEN_BUDGET ?? 60_000),
@@ -114,11 +92,8 @@ export function loadConfig(): Config {
     },
     serverLogPath: process.env.SERVER_LOG_PATH ?? "./server/logs/latest.log",
     stateDir: process.env.STATE_DIR ?? "./state",
-    exfilDir,
+    exfilDir: process.env.EXFIL_DIR ?? "./exfil",
     promptsDir: process.env.PROMPTS_DIR ?? "./prompts",
-    dmInboundPath: process.env.DM_INBOUND_PATH ?? "./data/dm-inbound.jsonl",
-    dmStorePath: process.env.DM_STORE_PATH ?? "./data/dms.jsonl",
-    dmRecordPath: process.env.DM_RECORD_PATH ?? join(exfilDir, "dms.jsonl"),
     reducerCursorDir: process.env.REDUCER_CURSOR_DIR ?? "./data/reducer-cursors",
     enableBash: process.env.ENABLE_BASH === "true",
     disclosureArm: (process.env.DISCLOSURE_ARM ?? "a").toLowerCase(),

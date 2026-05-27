@@ -158,15 +158,15 @@ describe("reducer boot replay", () => {
     expect((heartbeats[0] as { digest: string }).digest).toContain("Two players moved");
   });
 
-  it("filters via accepts() — chat reducer skips non-chat events on replay", async () => {
+  it("filters via accepts() — a selective reducer skips non-matching events on replay", async () => {
     await seedGroundTruth([
       { seq: 1, line: line("alice joined the game") },
       { seq: 2, line: "[15:40:10] [Async Chat Thread - #0/INFO]: <alice> hi" },
       { seq: 3, line: line("alice left the game") },
     ]);
     const { manager, inbox, cursorStore } = await setup({
-      name: "chat",
-      promptName: "chat-reducer",
+      name: "alt",
+      promptName: "alt-reducer",
       accepts: (ev) => ev.kind === "chat",
       batchLines: 1,
     });
@@ -184,10 +184,10 @@ describe("reducer boot replay", () => {
     expect(sent).toContain("<alice> hi");
     expect(sent).not.toContain("joined the game");
 
-    // Cursor advanced to the chat event's seq (2), not 3 — only flushed accepted
+    // Cursor advanced to the matching event's seq (2), not 3 — only flushed accepted
     // events contribute. On the next boot, the leave at seq 3 is replayed (and
     // skipped again by accepts) — harmless re-scan.
-    expect(await cursorStore.read("chat")).toBe(2);
+    expect(await cursorStore.read("alt")).toBe(2);
     inbox.drain();
   });
 
@@ -235,7 +235,7 @@ describe("reducer boot replay", () => {
     expect(first).toBe(second); // same payload — retry didn't drop anything
   });
 
-  it("ground_truth was written by the previous run; cursor file persists across DmStore-style reload", async () => {
+  it("ground_truth was written by the previous run; cursor file persists across reload", async () => {
     // This is the cross-process resume story. Seed a ground_truth + cursor as if a
     // previous harness wrote them, then construct a fresh manager and confirm it
     // resumes correctly without re-processing flushed events.
@@ -289,8 +289,8 @@ describe("ReducerCursorStore", () => {
   it("isolates cursors by reducer name", async () => {
     const store = new ReducerCursorStore(cursorDir);
     await store.write("events", 10);
-    await store.write("chat", 5);
+    await store.write("world", 5);
     expect(await store.read("events")).toBe(10);
-    expect(await store.read("chat")).toBe(5);
+    expect(await store.read("world")).toBe(5);
   });
 });

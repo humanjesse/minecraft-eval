@@ -53,10 +53,10 @@ only record of what happened.
 
 Avoid hidden, clever memory. Make memory explicit and auditable.
 
-1. **Raw truth**: full server logs, raw chat, raw DMs, RCON commands/replies,
-   world snapshots, file diffs. Append-only and off-VM.
-2. **Model experience**: exactly what the admin saw and did: heartbeats,
-   selected chat digests, delivered DMs, tool results.
+1. **Raw truth**: full server logs (chat included), RCON commands/replies, world
+   snapshots, file diffs. Append-only and off-VM.
+2. **Model experience**: exactly what the admin saw and did: chat lines as
+   delivered, heartbeats, tool results.
 3. **Model-owned memory**: files under `state/`, such as journal entries,
    player notes, policies, case files, reducer prompts, scripts, plugins, and
    self-created systems.
@@ -75,10 +75,9 @@ per-player "private admin" sessions that can make commitments or decisions.
 
 Inbox item families:
 
-- Heartbeat digest from server/log reducer.
-- Public chat digest from chat-focused reducer behavior.
+- Heartbeat digest from server/log reducer (currently events + world).
+- Public chat line, full-fidelity, direct from `LogIngestor` (no reducer).
 - Urgent event interrupt.
-- Rate-limited player DM delivery.
 - Reflection/synthesis tick.
 - Operator message for phase 1/2 or genuine out-of-band needs.
 
@@ -90,44 +89,26 @@ Per-player continuity should live in files, not separate authority sessions:
 - `state/policies.md` for current standing rules or principles.
 - `state/current.md` for short global state and unresolved server issues.
 
-**DM delivery — superseded by the resolved design** (see DESIGN.md → Player DMs).
-We do NOT inject a harness-authored prior summary on delivery. Instead: the inbound
-DM's full content is delivered in the arrival notification (wakes a turn), and recall
-is pull-based via `read_dms(player, n)` and `list_dm_threads()` over a durable
-`dms.jsonl`. Facts (transcripts) are reliable infra; the admin's *view* of a player
-stays its own in `state/`. No per-player summarization helper.
+**Player→admin channel — superseded.** The original `/dm` plugin + durable DM
+thread store has been removed (see DESIGN.md → Public chat is the only player→admin
+channel). Public chat is now the only player→admin path; every chat line lands
+directly in the admin's inbox full-fidelity. The trade-offs documented there
+(no private inbound channel, no durable thread memory, cost scales with chat
+volume) are accepted.
 
-## Public Chat Reduction
+## Public Chat Reduction — abandoned
 
-Public chat deserves separate attention from system logs because it carries the
-social signal: pressure campaigns, faction formation, harassment, appeals,
-manipulation, norm negotiation, and direct admin mentions.
-
-Recommended shape:
-
-- Keep raw public chat in ground truth.
-- Parse public chat into a rolling buffer.
-- Feed a chat-focused reducer view into heartbeat generation.
-- Emit direct admin mentions, conflicts, repeated allegations, harassment, and
-  coordination attempts.
-- Avoid forwarding routine chatter verbatim.
-
-**Shipped** as two reducers (`events`, `chat`) fed the raw log lines (routed by type,
-not reshaped), each with its own neutral editable prompt; see DESIGN.md → Architecture
-and STATUS.md. Note the neutrality correction vs. the older list below: `urgent` is
-**value-neutral infrastructural distress only** (crash/lag/exploit/spam-volume) — NOT
-player conduct like "active griefing" or "harassment escalation"; conduct is a neutral
-social fact in the digest and the admin judges it.
+The earlier design fed public chat through a salience-filtering `chat` reducer
+(see git history for the `chat-reducer.md` prompt). That reducer has been removed
+in favor of full-fidelity chat delivery. The model now reads every chat line as
+it lands; salience filtering, if it returns, will be the admin's own choice
+expressed by editing its events reducer or by writing its own filters in `state/`.
 
 Original sketch (kept for context):
 
 - `server_events`: joins, leaves, deaths, commands, errors, notable world events.
 - `public_chat`: social digest and direct admin-relevant messages.
 - `urgent`: server distress (crash, severe lag, exploit, spam flood).
-
-The admin should be able to inspect raw recent chat on demand (a read tool over the
-durable log — same pattern as DM recall), but does not receive all chat directly by
-default.
 
 ## Reflection And Synthesis Loop
 
@@ -189,7 +170,7 @@ tool-mediated inspection works.
 Baseline visual posture:
 
 ```text
-logs + public chat + DMs + on-demand visual inspection
+logs + public chat + on-demand visual inspection
 ```
 
 Avoid continuous screenshot streams by default; they increase cost, create context
@@ -206,21 +187,14 @@ that's a result. The numbers below are good starting defaults, not constraints.
 Players can create unlimited ground truth, but should not be able to create
 unlimited model context. Rate limits protect server usability and eval integrity.
 
-Initial public chat policy:
+Initial public chat policy (the only player→admin channel):
 
 - Soft limit: about 3 messages per minute per player.
 - Burst allowance: about 5 messages per 2 minutes.
 - Excess messages remain in raw logs.
-- Reducer reports spam as aggregate behavior instead of forwarding each line.
-
-Initial DM-to-admin policy:
-
-- About 1 DM per 2 minutes per player.
-- Excess DMs are recorded and queued/summarized, not silently dropped.
-- Repeated excess becomes a digest such as: "Player X sent 12 suppressed DMs in
-  5 minutes; representative topics were ...".
-- Urgent escalation should come from reducer/harness detection, not from a player
-  bypassing rate limits by labeling everything urgent.
+- Above the soft limit, the chat relay could batch/coalesce a player's messages
+  into a single inbox push rather than waking the admin per line — TBD; not
+  built. Current state: every chat line wakes a turn.
 
 This policy should be visible to players before they join or message the admin.
 The admin may later change moderation policy if it chooses, but the harness should
@@ -233,8 +207,8 @@ The next major milestone should make the autonomous loop real:
 ```text
 server log tail
   -> typed parser
-  -> reducer batch
-  -> heartbeat / urgent / chat digest inbox items
+  -> route: chat → inbox direct; events/world → reducer batch → heartbeat
+  -> heartbeat / urgent / player_chat inbox items
   -> admin turn
   -> tool actions
   -> exfil

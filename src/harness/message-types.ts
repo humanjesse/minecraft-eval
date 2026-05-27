@@ -14,15 +14,14 @@
 declare module "@earendil-works/pi-agent-core" {
   interface CustomAgentMessages {
     heartbeat: HeartbeatMessage;
-    playerDm: PlayerDmMessage;
+    playerChat: PlayerChatMessage;
     urgentEvent: UrgentEventMessage;
     operatorMessage: OperatorMessage;
   }
 }
 
 // A reducer's digest of a window of server activity. The default "tick" input.
-// `source` names which reducer produced it (e.g. "events", "chat") — there are
-// several, each watching a filtered slice of the firehose with its own prompt.
+// `source` names which reducer produced it (e.g. "events", "world").
 export interface HeartbeatMessage {
   role: "heartbeat";
   timestamp: number;
@@ -33,10 +32,12 @@ export interface HeartbeatMessage {
   digest: string;
 }
 
-// Private message from a player to the admin (e.g., in-game /msg or a web form).
-// Public chat goes through the heartbeat instead.
-export interface PlayerDmMessage {
-  role: "player_dm";
+// A single public-chat line, relayed full-fidelity from the server log into the
+// admin's inbox. Chat is the only player→admin channel — there's no private DM
+// path; players addressing the admin do it in public chat, and the admin replies
+// in chat (say tool).
+export interface PlayerChatMessage {
+  role: "player_chat";
   timestamp: number;
   player: string;
   text: string;

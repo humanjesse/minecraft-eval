@@ -4,61 +4,44 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.nio.file.OpenOption;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.nio.file.StandardOpenOption;
 import java.util.List;
 
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.CommandExecutor;
-import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 
 // Minimal Paper plugin:
-//   /dm <message>  — non-broadcasting DM channel, appends to a spool the harness tails
-//                    (see src/dms/ingest.ts).
 //   /info           — re-shows the research-deployment disclosure.
 //   PlayerJoinEvent — sends the disclosure to every player as they load in.
+//   BlockListener   — emits structured block-change lines into latest.log.
 //
-// Deliberately dumb: the plugin only captures and persists raw messages, and shows the
-// disclosure. All judgment, delivery, recall, and reply live in the harness. The DM
-// spool decouples lifecycles — if the harness is down, DMs buffer here and are
-// reconciled on its next boot. The disclosure is loaded from plugins/AdminDm/
-// disclosure.txt at startup so the text can be edited without rebuilding the jar.
+// The class is named AdminDmPlugin / artifact AdminDm.jar for historical reasons —
+// it used to host a /dm DM channel. That channel was removed (the admin now engages
+// with public chat directly). The "[AdminDm]" logger prefix is still load-bearing:
+// src/world/events.ts routes block-change lines on that prefix, so renaming would
+// cascade beyond the plugin.
 public final class AdminDmPlugin extends JavaPlugin implements CommandExecutor, Listener {
-  private Path spool;
   private String[] disclosureLines = new String[0];
 
   @Override
   public void onEnable() {
-    saveDefaultConfig();
     // Drop the packaged disclosure.txt into plugins/AdminDm/ on first run; thereafter
     // the file is whatever the operator put there. Loading happens fresh every onEnable
     // so a /reload picks up edits without restarting Paper.
     saveResource("disclosure.txt", false);
     loadDisclosure();
 
-    String configured = getConfig().getString("spool-path", "../data/dm-inbound.jsonl");
-    this.spool = Paths.get(configured).toAbsolutePath().normalize();
-    try {
-      Files.createDirectories(this.spool.getParent());
-    } catch (IOException e) {
-      getLogger().severe("Could not create DM spool dir " + this.spool.getParent() + ": " + e.getMessage());
-    }
-
-    getCommand("dm").setExecutor(this);
     getCommand("info").setExecutor(this);
     getServer().getPluginManager().registerEvents(this, this);
     // World-change observer: emits "block_<action> ..." lines through this plugin's
     // logger straight into latest.log, which the harness's LogIngestor already tails.
     // See plugin/src/eval/dm/BlockListener.java and src/world/events.ts.
     getServer().getPluginManager().registerEvents(new BlockListener(getLogger()), this);
-    getLogger().info("AdminDm enabled — /dm spools to " + this.spool + ", " + this.disclosureLines.length + " disclosure line(s) loaded, world observer active");
+    getLogger().info("AdminDm enabled — " + this.disclosureLines.length + " disclosure line(s) loaded, world observer active");
   }
 
   private void loadDisclosure() {
@@ -78,7 +61,7 @@ public final class AdminDmPlugin extends JavaPlugin implements CommandExecutor, 
   @EventHandler
   public void onPlayerJoin(PlayerJoinEvent event) {
     if (this.disclosureLines.length == 0) return;
-    Player player = event.getPlayer();
+    var player = event.getPlayer();
     getServer().getScheduler().runTaskLater(this, () -> sendDisclosure(player), 20L);
   }
 
@@ -88,8 +71,7 @@ public final class AdminDmPlugin extends JavaPlugin implements CommandExecutor, 
 
   @Override
   public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
-    String name = command.getName();
-    if (name.equalsIgnoreCase("info")) {
+    if (command.getName().equalsIgnoreCase("info")) {
       if (this.disclosureLines.length == 0) {
         sender.sendMessage("§7(no disclosure configured)");
       } else {
@@ -97,56 +79,6 @@ public final class AdminDmPlugin extends JavaPlugin implements CommandExecutor, 
       }
       return true;
     }
-    if (name.equalsIgnoreCase("dm")) return onDm(sender, args);
     return false;
-  }
-
-  private boolean onDm(CommandSender sender, String[] args) {
-    if (!(sender instanceof Player player)) {
-      sender.sendMessage("Only players can DM the admin.");
-      return true;
-    }
-    if (args.length == 0) {
-      player.sendMessage("Usage: /dm <message>");
-      return true;
-    }
-    String message = String.join(" ", args);
-    String line = "{"
-        + "\"ts\":" + System.currentTimeMillis() + ","
-        + "\"player\":\"" + esc(player.getName()) + "\","
-        + "\"uuid\":\"" + esc(player.getUniqueId().toString()) + "\","
-        + "\"message\":\"" + esc(message) + "\""
-        + "}\n";
-    try {
-      synchronized (this) {
-        Files.write(this.spool, line.getBytes(StandardCharsets.UTF_8),
-            new OpenOption[] { StandardOpenOption.CREATE, StandardOpenOption.APPEND });
-      }
-      player.sendMessage("§7(sent to admin)");
-    } catch (IOException e) {
-      getLogger().severe("Failed to write DM to spool: " + e.getMessage());
-      player.sendMessage("§c(couldn't reach the admin right now — try again)");
-    }
-    return true;
-  }
-
-  // Minimal JSON string escaping — quotes, backslash, and control chars.
-  private static String esc(String s) {
-    StringBuilder b = new StringBuilder(s.length() + 8);
-    for (int i = 0; i < s.length(); i++) {
-      char c = s.charAt(i);
-      switch (c) {
-        case '"' -> b.append("\\\"");
-        case '\\' -> b.append("\\\\");
-        case '\n' -> b.append("\\n");
-        case '\r' -> b.append("\\r");
-        case '\t' -> b.append("\\t");
-        default -> {
-          if (c < 0x20) b.append(String.format("\\u%04x", (int) c));
-          else b.append(c);
-        }
-      }
-    }
-    return b.toString();
   }
 }

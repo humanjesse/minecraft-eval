@@ -58,36 +58,22 @@ Model memory resets between 2 and 3 so phase 3 is the clean longitudinal traject
   real player: boot/arm-selection (arm A, verbatim prompt recorded) → operator msg →
   parallel tool calls → `say`/`tell` landed in-game → join/deaths/chat tailed →
   reducers digested neutrally → heartbeats woke the admin → coherent discretionary
-  calls (declined a diamond request on fairness grounds; empathetic on deaths;
-  hands-off on the join). Confirmed live: raw-line feed, chat-vs-events routing, chat
-  salience filter (dropped routine "hello", surfaced an admin-directed request),
-  condensation (a 3-line join collapsed to one fact, UUID noise dropped), neutrality
-  (no conduct labels, no false `urgent`), prompt caching across turns, `tell` outbound
-  DM. NOT yet exercised live: log rotation (needs a Paper restart), the count-trigger
-  flush (needs a >batch burst), the sliding window under load.
-- **Player DMs — built and live-verified end-to-end.** A private 1:1 channel: a Paper
-  plugin (`plugin/`, built with plain `javac`+`jar` via `plugin/build.sh` against
-  `server/libraries` paper-api — no Maven/Gradle, targets Java 21 bytecode for Paper's
-  remapper) exposes non-broadcasting `/dm <msg>`, appending `{ts,player,uuid,message}`
-  to an inbound spool (`data/dm-inbound.jsonl`, matched to the plugin's `config.yml`
-  `spool-path`). The harness DM ingestor (`src/dms/ingest.ts`) tails the spool —
-  reconciling DMs spooled during downtime by seq on boot, then tailing live gap-free —
-  and per DM: write-through to the canonical store (`src/dms/store.ts`: working
-  `data/dms.jsonl` **+** off-VM `exfil/dms.jsonl`, persistent across runs, outside
-  `state/`; durable-first, record-first ordering so a failed persist never leaves a
-  phantom message or loses the audit) and push a `player_dm` to the inbox carrying full
-  content (one guaranteed look, bypassing the reducers). Recall via `read_dms(player,n)`
-  / `list_dm_threads()` (neutral metadata derived from the log); every `tell` appends
-  to the player's thread. Retrieval is logged for free via the existing tool-result
-  exfil. Unit tests cover the store (index, neutral metadata, reload/seq-resume,
-  torn-line tolerance) and the ingestor (downtime replay, seq de-dup, parse-error +
-  shape-validation survival). Live session 2026-05-22 confirmed: plugin → spool →
-  byte-identical write-through to both sinks → inbox notification wakes admin → `tell`
-  reply appended back to the thread → `read_dms` + `list_dm_threads` exercised on a
-  follow-up DM (including correct cross-run thread reconstruction from an earlier
-  run's `out` entry, and the `sinceLastReply` counter ticking on a new inbound).
-  Boot reconciliation + JSON-escaping checks remain optional polish; everything
-  load-bearing has been observed.
+  calls. Confirmed live (against the prior DM design — the chat reducer has since
+  been removed, see below): raw-line feed, event routing, condensation (a 3-line
+  join collapsed to one fact, UUID noise dropped), neutrality (no conduct labels,
+  no false `urgent`), prompt caching across turns. NOT yet exercised live: log
+  rotation (needs a Paper restart), the count-trigger flush (needs a >batch burst),
+  the sliding window under load.
+- **Chat-only player channel — replaces the DM design.** The `/dm` plugin command
+  and the entire DM persistence layer (`src/dms/`, `read_dms`, `list_dm_threads`)
+  were removed. Public chat is the only player→admin channel: every chat line
+  flows full-fidelity from `LogIngestor` directly into the inbox as a `[chat from
+  <player>]` message (no reducer, no salience filter). The admin replies by
+  speaking in chat (`say`); `tell` survives as a send-only side-channel. The
+  trade-off (loss of the private-manipulation / public-action measurable, plus
+  token cost scaling with chat volume) is documented in DESIGN.md → Public chat
+  is the only player→admin channel. Not yet exercised live under the new wiring;
+  unit tests pass, ready for a fresh phase-1 smoke run.
 - **RCON reconnect on server restart.** `RconClient.send()` reconnects when the socket
   has dropped (server restart) and retries once — but only when the socket is
   *known-dead* (an 'end'/'error' cleared the handle), so a live-socket failure (e.g. a
@@ -156,8 +142,9 @@ Model memory resets between 2 and 3 so phase 3 is the clean longitudinal traject
   written digest marked `quiet: true` was produced, exfil'd as `heartbeat_produced`,
   and then never delivered. World reducer wrote a useful 22-event sand-block
   description, marked it quiet, the admin's next turn never saw it ("Quiet interval —
-  just the test player joining and sending that DM"). All three reducer prompts
-  (events/chat/world) updated with an explicit contract: `quiet: true` requires
+  just the test player joining and sending that DM"). The reducer prompts in use at the time
+  (events/chat/world; chat has since been removed) were updated with an explicit
+  contract: `quiet: true` requires
   empty `digest`; if you wrote anything, set `quiet: false` or the heartbeat is
   dropped — there is no "low-priority delivered" state. (Urgent items still fire
   regardless of `quiet`.) (2) **Neutral-sounding categorization labels still leak.**
@@ -176,8 +163,7 @@ Model memory resets between 2 and 3 so phase 3 is the clean longitudinal traject
 - **Durable event spool + reducer resume.** Ingestion is now decoupled from reduction:
   `LogIngestor` (`src/world/log-ingestor.ts`) owns the single server-log tail, parses
   each line once, and writes `{kind:"server_log", seq, parsed, line}` to ground_truth
-  with a monotonic per-stream seq (recovered from ground_truth on boot — same pattern
-  as `DmStore.maxInboundSeq()`). Reducers no longer route from in-memory; each tracks
+  with a monotonic per-stream seq (recovered from ground_truth on boot). Reducers no longer route from in-memory; each tracks
   a `lastSeq` cursor (`data/reducer-cursors/<runId>/<name>.json`, atomic write-temp +
   rename) and on boot does **replay → subscribe → start timer**: it replays
   ground_truth events past its cursor through `accepts()` into its buffer, then
@@ -220,9 +206,9 @@ Model memory resets between 2 and 3 so phase 3 is the clean longitudinal traject
 
 - `state/journal/day1.md` is leftover shakedown data referencing now-deleted files;
   harmless, gets wiped at the phase reset.
-- Reducer cadence — decided 2026-05-22: count is the primary trigger (events 100,
-  chat 30), the interval is a long latency safety-net (events 300s, chat 120s) to
-  avoid burning tokens on trickle activity while still surfacing a lone message.
+- Reducer cadence — count is the primary trigger (events 100, world 50), the
+  interval is a long latency safety-net (events 300s, world 300s) to avoid
+  burning tokens on trickle activity while still surfacing a lone event.
   Empty windows skip the model call. Revisit against real phase-2/3 volume.
 - Reducer failures are logged (`reducer_error`) and surfaced to the admin as degraded
   heartbeats; raw lines survive in ground_truth. Proper retry/resume waits on the

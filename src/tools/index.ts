@@ -5,7 +5,6 @@ import { promisify } from "node:util";
 import { Type } from "@earendil-works/pi-ai";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { RconClient } from "../world/rcon.js";
-import type { DmEntry, DmStore } from "../dms/store.js";
 
 const execAsync = promisify(exec);
 
@@ -28,7 +27,6 @@ export interface ToolDeps {
   rcon: RconClient;
   stateDir: string;
   enableBash: boolean;
-  dmStore: DmStore;
 }
 
 const rconParams = Type.Object({
@@ -60,23 +58,6 @@ const listDirParams = Type.Object({
 const bashParams = Type.Object({
   command: Type.String({ description: "Shell command to run." }),
 });
-
-const readDmsParams = Type.Object({
-  player: Type.String({ description: "Player whose private thread to read." }),
-  n: Type.Optional(Type.Number({ description: "How many of the most recent messages to return (default 20)." })),
-});
-
-const listDmThreadsParams = Type.Object({});
-
-function formatDmThread(player: string, entries: DmEntry[]): string {
-  if (entries.length === 0) return `(no DM history with ${player})`;
-  return entries
-    .map((e) => {
-      const who = e.dir === "in" ? player : "you";
-      return `[${new Date(e.ts).toISOString()}] ${who}: ${e.message}`;
-    })
-    .join("\n");
-}
 
 export function buildTools(deps: ToolDeps): AgentTool[] {
   const scoped = (p: string): string => {
@@ -114,48 +95,11 @@ export function buildTools(deps: ToolDeps): AgentTool[] {
   const tellTool: AgentTool<typeof tellParams> = {
     name: "tell",
     label: "Whisper a player",
-    description: "Send a private message to a single player in-game. This is your reply channel for DMs — it's appended to that player's private thread.",
+    description: "Send a private message to a single player in-game. Send-only — there is no recall mechanism, so use chat (say) when you want the conversation to be visible to others.",
     parameters: tellParams,
     execute: async (_id, params) => {
       const reply = await deps.rcon.send(`tell ${params.player} ${params.message}`);
-      // Every private message to a player is part of that player's one private thread —
-      // there's no clean "DM reply vs. other whisper" distinction, and unifying keeps
-      // thread reconstruction unambiguous (see notes/DESIGN.md → Player DMs).
-      await deps.dmStore.append({ ts: Date.now(), dir: "out", player: params.player, message: params.message });
       return { content: [{ type: "text", text: "sent" }], details: { player: params.player, message: params.message, reply } };
-    },
-  };
-
-  const readDmsTool: AgentTool<typeof readDmsParams> = {
-    name: "read_dms",
-    label: "Read a DM thread",
-    description: "Read the most recent private messages exchanged with a player, oldest to newest.",
-    parameters: readDmsParams,
-    execute: async (_id, params) => {
-      const entries = deps.dmStore.readThread(params.player, params.n ?? 20);
-      return {
-        content: [{ type: "text", text: formatDmThread(params.player, entries) }],
-        details: { player: params.player, count: entries.length },
-      };
-    },
-  };
-
-  const listDmThreadsTool: AgentTool<typeof listDmThreadsParams> = {
-    name: "list_dm_threads",
-    label: "List DM threads",
-    description: "List every player you have a private DM thread with, most recently active first, with neutral metadata (message count, last activity, how many they've sent since your last reply, and a preview).",
-    parameters: listDmThreadsParams,
-    execute: async () => {
-      const threads = deps.dmStore.listThreads();
-      const text = threads.length === 0
-        ? "(no DM threads yet)"
-        : threads
-            .map((t) =>
-              `${t.player} — ${t.messageCount} msgs, last ${new Date(t.lastTs).toISOString()}, ` +
-              `${t.sinceLastReply} since your last reply: "${t.preview}"`,
-            )
-            .join("\n");
-      return { content: [{ type: "text", text }], details: { threads } };
     },
   };
 
@@ -199,8 +143,6 @@ export function buildTools(deps: ToolDeps): AgentTool[] {
     rconTool as AgentTool,
     sayTool as AgentTool,
     tellTool as AgentTool,
-    readDmsTool as AgentTool,
-    listDmThreadsTool as AgentTool,
     readFileTool as AgentTool,
     writeFileTool as AgentTool,
     listDirTool as AgentTool,
