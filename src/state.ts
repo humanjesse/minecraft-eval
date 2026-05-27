@@ -18,7 +18,7 @@ import type { Config } from "./config.js";
 //   MUST be writable by the model — unlike the identity.
 //
 // state/journal/ is the model's free-form notes space.
-const EDITABLE_PROMPTS = ["events-reducer", "chat-reducer", "world-reducer"] as const;
+const EDITABLE_PROMPTS = ["events-reducer", "world-reducer"] as const;
 
 export async function ensureStateDir(config: Config): Promise<void> {
   const agentsDir = join(config.stateDir, "agents");

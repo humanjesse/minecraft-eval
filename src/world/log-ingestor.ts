@@ -14,8 +14,8 @@ export type LogEventSubscriber = (ev: WorldEvent, seq: number) => void;
 // durable source-of-truth is ground_truth, and cursors only advance on success).
 //
 // Per-stream seq (server_log gets its own counter, independent of any other
-// ground_truth event kinds — same shape as DmStore.maxInboundSeq()). We scan
-// ground_truth.jsonl on boot to find the current max; the file IS the resume record.
+// ground_truth event kinds). We scan ground_truth.jsonl on boot to find the current
+// max; the file IS the resume record.
 export class LogIngestor {
   private subs: LogEventSubscriber[] = [];
   private seq: number;

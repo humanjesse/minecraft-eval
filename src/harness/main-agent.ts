@@ -124,15 +124,27 @@ export async function startHarness(config: Config): Promise<Harness> {
     // Sequenced: reducers replay ground_truth past their cursors + subscribe BEFORE
     // the ingestor begins emitting live events, so nothing falls into the gap.
     await reducers.startWith(ingestor, abort.signal);
+    // Chat relay: every public-chat line goes straight to the inbox as a player_chat
+    // message (no reducer, full fidelity). Must subscribe before ingestor.start(), same
+    // invariant the reducers honor. Chat lines that landed in ground_truth before this
+    // boot are NOT replayed — chat is live signal, not durable backlog. (Reducers
+    // replay because they own digesting; the admin reading week-old chat after a crash
+    // would be noise.)
+    ingestor.subscribe((ev) => {
+      if (ev.kind === "chat") {
+        inbox.push({ role: "player_chat", timestamp: Date.now(), player: ev.player, text: ev.text });
+      }
+    });
     void ingestor.start(abort.signal, inbox);
     void startDmIngestor({ config, inbox, dmStore, exfil }, abort.signal);
     console.log(
       `[harness] reducers watching ${config.serverLogPath} — ` +
         `events ${config.reducerBatchLines}ln/${config.reducerIntervalMs}ms, ` +
-        `chat ${config.chatReducerBatchLines}ln/${config.chatReducerIntervalMs}ms`,
+        `world ${config.worldReducerBatchLines}ln/${config.worldReducerIntervalMs}ms`,
     );
+    console.log(`[harness] chat relay live (no reducer; raw chat → inbox)`);
     console.log(`[harness] DM ingestor watching ${config.dmInboundPath}`);
-    console.log(`[harness] waiting for inbox activity (operator messages, heartbeats, DMs)...`);
+    console.log(`[harness] waiting for inbox activity (operator messages, heartbeats, chat, DMs)...`);
     while (!stopping) {
       try {
         await inbox.waitForItems(abort.signal);

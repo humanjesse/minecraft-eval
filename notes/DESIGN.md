@@ -57,25 +57,30 @@ Anthropic SDK directly (locks us to one provider).
 
 - **Main admin agent** (expensive model) — broad authority: RCON, file ops, and
   eventually bash. Receives a unified inbox, acts via tools.
-- **Log-reducer sub-agents** (cheap model) — several, one per concern, all running
-  one mechanism (`ReducerSpec { name, promptFile, inputFilter, cadence }`) with
-  different prompts and input filters. The log parser **routes** each line by type but
-  does not reshape it: every reducer is fed the **raw log lines** (timestamps and all)
-  and synthesizes from the real firehose — parsing exists only to route (chat vs the
-  rest) and to tag `ground_truth`. Currently two: `events`
-  (joins/leaves/deaths/commands/world) and `chat` (the social signal). Cadence is
-  tuned per concern — events batch lazily, chat flushes eagerly because an address to
-  the admin is time-sensitive. Each emits **labeled heartbeat digests**
-  (`[heartbeat:chat]`) + urgent interrupts into the inbox; each can stay `quiet` to
-  avoid spam. The main agent never sees raw logs by default (it will be able to pull
-  them on demand once it has `bash`/log-read tools — phase 3). Same mechanism later
-  absorbs a world-change observer.
-- **Inbox** — heartbeats, player DMs, urgent events, and operator messages all land
-  here with source labels. The loop drains it between turns (`agent.prompt(batch)`).
-  Sleeps on an empty inbox (no token spend) and wakes on arrival.
+- **Log-reducer sub-agents** (cheap model) — one per concern, all running one
+  mechanism (`ReducerSpec { name, promptFile, inputFilter, cadence }`) with different
+  prompts and input filters. The log parser **routes** each line by type but does not
+  reshape it: every reducer is fed the **raw log lines** (timestamps and all) and
+  synthesizes from the real firehose — parsing exists only to route and to tag
+  `ground_truth`. Currently two: `events` (joins/leaves/deaths/commands/server msgs)
+  and `world` (block-level changes). Cadence is tuned per concern — events batch
+  lazily, world even more so. Each emits **labeled heartbeat digests**
+  (`[heartbeat:events]`) + urgent interrupts into the inbox; each can stay `quiet` to
+  avoid spam. The main agent never sees raw logs by default (it can pull them via
+  `bash` once enabled).
+- **Chat relay** (no reducer) — public chat is **not** digested. Every chat line is
+  pushed into the inbox full-fidelity as a `[chat from <player>]` message, same
+  subscribe-before-`ingestor.start()` invariant as the reducers. Chat is ambient
+  signal (N-party, transient); it ages out of the model's context window over time
+  and is not persisted to a recall-friendly store (the model can `grep ground_truth`
+  via bash, or take its own notes, if it wants longer memory).
+- **Inbox** — heartbeats, chat lines, player DMs, urgent events, and operator
+  messages all land here with source labels. The loop drains it between turns
+  (`agent.prompt(batch)`). Sleeps on an empty inbox (no token spend) and wakes on
+  arrival.
 
-Inputs reach the model labeled by source: `[heartbeat …]`, `[DM from <player>] …`,
-`[URGENT — …]`, `[operator] …`.
+Inputs reach the model labeled by source: `[heartbeat …]`, `[chat from <player>] …`,
+`[DM from <player>] …`, `[URGENT — …]`, `[operator] …`.
 
 ### Player DMs
 
@@ -203,10 +208,11 @@ Two classes of prompt, deliberately separated:
   context). Read directly from `prompts/`, never editable by the model.
   Reproducibility is what makes runs comparable across time and across models.
 - **Editable (model-owned):** reducer prompts under `state/agents/`, currently
-  `events-reducer.md` and `chat-reducer.md`. Seeded from `prompts/` once, then the
+  `events-reducer.md` and `world-reducer.md`. Seeded from `prompts/` once, then the
   model owns them. The diff against each frozen baseline is a **primary eval signal**
   — it shows, directly and per concern, how the admin reshaped its own perception of
-  the server (attention drift made legible).
+  the server (attention drift made legible). Public chat has no reducer prompt; chat
+  lines flow to the admin full-fidelity (see Player channels below).
 
 `buildAdminPrompt()` assembles the live prompt in Pi's conventional shape: identity
 prose → `Available tools:` roster (auto-derived from the live tools array, so it

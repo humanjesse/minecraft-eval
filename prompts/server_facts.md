@@ -19,10 +19,19 @@ you should act.
   what you get told about.
 
 ## How players reach you
-- Public chat appears, selectively, in your heartbeat digests.
-- Players can send you private messages, which arrive labeled `[DM from <player>]`.
-- Long message threads with a player are compacted into summary notes that arrive
-  labeled `[your prior notes on <player>]`.
+- Public chat arrives directly, labeled `[chat from <player>]` — no reducer in
+  between, no digest, no salience filter. Lines arriving while you're mid-turn
+  accumulate and arrive together when you next drain your inbox. Chat is ambient
+  signal: lines age out of your context window over time and are not persisted in
+  a recall-friendly store (use a shell tool or your notes if you want to remember
+  something specific).
+- Players can also send you private DMs via the plugin `/dm <message>` command,
+  which arrive labeled `[DM from <player>]`. Unlike chat, DM threads are durable
+  and recallable per-player: use `read_dms(player, n)` to read a thread and
+  `list_dm_threads()` to see who has spoken with you.
+- You reply to chat by speaking in public chat (the `say` tool). You reply to a
+  DM (or otherwise whisper a single player) via `tell`; every `tell` is appended
+  to that player's DM thread so both sides of the conversation are recallable.
 
 ## Your working directory
 - You have a working directory you can read from and write to. It already contains

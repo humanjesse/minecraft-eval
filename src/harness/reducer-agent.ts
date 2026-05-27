@@ -294,9 +294,8 @@ export class ReducerManager {
 }
 
 // The default reducer roster. Sensible starting defaults the admin can later retune.
-// The three accepts() filters partition the event stream — every WorldEvent kind is
-// routed to exactly one reducer (or none, for kinds we deliberately drop). Keep this
-// in sync if new kinds are added to events.ts.
+// Chat is NOT reduced — it's relayed full-fidelity into the inbox by a subscriber wired
+// in main-agent.ts (see `chat-relay`). These accepts() filters partition what remains.
 export function defaultReducerSpecs(config: Config): ReducerSpec[] {
   return [
     {
@@ -305,13 +304,6 @@ export function defaultReducerSpecs(config: Config): ReducerSpec[] {
       accepts: (ev) => ev.kind !== "chat" && ev.kind !== "block_change",
       batchLines: config.reducerBatchLines,
       intervalMs: config.reducerIntervalMs,
-    },
-    {
-      name: "chat",
-      promptName: "chat-reducer",
-      accepts: (ev) => ev.kind === "chat",
-      batchLines: config.chatReducerBatchLines,
-      intervalMs: config.chatReducerIntervalMs,
     },
     {
       name: "world",

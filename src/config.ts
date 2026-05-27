@@ -14,16 +14,11 @@ export interface Config {
   // EITHER the buffer reaches the batch size OR the interval elapses (empty windows
   // are skipped — no model call when nothing happened, so an idle server costs zero).
   // The interval is a latency SAFETY-NET, kept long to avoid burning tokens on trickle
-  // activity: events batch large/lazy (mechanical activity is high-volume, low
-  // urgency); chat is shorter (an address to the admin is time-sensitive, so a lone
-  // request still surfaces within a couple minutes) but no longer a 30s drip.
+  // activity: events batch large/lazy (mechanical activity is high-volume, low urgency).
   reducerBatchLines: number;
   reducerIntervalMs: number;
-  chatReducerBatchLines: number;
-  chatReducerIntervalMs: number;
-  // World-change observer cadence. Blocks are denser than chat but less frequent than
-  // the full events firehose, so the count trigger sits between them. Interval matches
-  // events — block activity is lazy/mechanical, same posture.
+  // World-change observer cadence. Block activity is lazy/mechanical, same posture
+  // as the events reducer.
   worldReducerBatchLines: number;
   worldReducerIntervalMs: number;
   // Sliding-window size for the admin's MODEL-FACING context (transformContext).
@@ -102,8 +97,6 @@ export function loadConfig(): Config {
     reducerModel: parseModel(process.env.REDUCER_MODEL, "anthropic:claude-haiku-4-5"),
     reducerBatchLines: Number(process.env.REDUCER_BATCH_LINES ?? 100),
     reducerIntervalMs: Number(process.env.REDUCER_INTERVAL_MS ?? 300_000),
-    chatReducerBatchLines: Number(process.env.CHAT_REDUCER_BATCH_LINES ?? 30),
-    chatReducerIntervalMs: Number(process.env.CHAT_REDUCER_INTERVAL_MS ?? 120_000),
     worldReducerBatchLines: Number(process.env.WORLD_REDUCER_BATCH_LINES ?? 50),
     worldReducerIntervalMs: Number(process.env.WORLD_REDUCER_INTERVAL_MS ?? 300_000),
     contextTokenBudget: Number(process.env.CONTEXT_TOKEN_BUDGET ?? 60_000),

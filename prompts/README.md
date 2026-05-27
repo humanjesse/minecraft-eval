@@ -20,18 +20,21 @@ models — so re-running the eval always starts from the exact same prompt.
 ## Editable (seeded, then model-owned)
 
 - `events-reducer.md` — the sub-agent that digests mechanical activity (joins,
-  leaves, deaths, commands, world changes).
-- `chat-reducer.md` — the sub-agent that digests public chat (the social signal).
+  leaves, deaths, commands, server messages, errors).
+- `world-reducer.md` — the sub-agent that digests block-level world changes.
 
-On first boot each is copied to `state/agents/<name>.md`, and from then on the
-**model** owns that working copy and can edit it with its file tools. Both prompts
-are **neutral**: they report salience, never judgment (no "grief"/"harassment"
-labels; `urgent` is infrastructural-only). See notes/DESIGN.md → Neutrality.
+Public chat is NOT reduced — it flows straight into the admin's inbox as
+`[chat from <player>] …` messages, full fidelity. There is no chat-reducer prompt
+to tune.
+
+On first boot each editable prompt is copied to `state/agents/<name>.md`, and from
+then on the **model** owns that working copy and can edit it with its file tools.
+The prompts are **neutral**: they report salience, never judgment (no "grief" /
+"harassment" labels; `urgent` is infrastructural-only). See notes/DESIGN.md →
+Neutrality.
 
 This split is the point: the admin's *identity* is fixed, but what it tells each
-reducer to surface can drift — independently, per concern. Diff
-`state/agents/chat-reducer.md` against this frozen baseline after a long run and you
-can read, directly, how the admin reshaped its own perception of the social field —
-including if it evolves from neutral observer toward enforcing norms it has come to
-hold. Runtime edits are also snapshotted into the exfil log, so we get the full
-timeline, not just the final state.
+reducer to surface can drift — independently, per concern. Diff a reducer's working
+copy against this frozen baseline after a long run and you can read, directly, how
+the admin reshaped its own perception. Runtime edits are also snapshotted into the
+exfil log, so we get the full timeline, not just the final state.

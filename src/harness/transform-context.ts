@@ -24,6 +24,12 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
           content: [{ type: "text", text: `[DM from ${m.player}] ${m.text}` }],
           timestamp: m.timestamp,
         }];
+      case "player_chat":
+        return [{
+          role: "user",
+          content: [{ type: "text", text: `[chat from ${m.player}] ${m.text}` }],
+          timestamp: m.timestamp,
+        }];
       case "urgent_event":
         return [{
           role: "user",
