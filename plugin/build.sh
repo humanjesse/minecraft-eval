@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Build the AdminDm Paper plugin with plain javac + jar — no Maven/Gradle. We compile
 # against the paper-api jar that Paper extracts into server/libraries (the same API
-# plugins normally compile against), then package classes + plugin.yml + disclosure.txt
-# into a jar dropped straight into server/plugins/.
+# plugins normally compile against), then package classes + plugin.yml + config.yml into
+# a jar dropped straight into server/plugins/.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,6 +29,7 @@ javac --release 21 -cp "$cp" -d "$out/classes" $(find "$here/src" -name '*.java'
 jar --create --file "$out/AdminDm.jar" \
   -C "$out/classes" . \
   -C "$here/resources" plugin.yml \
+  -C "$here/resources" config.yml \
   -C "$here/resources" disclosure.txt
 
 dest="$repo/server/plugins/AdminDm.jar"

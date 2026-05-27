@@ -3,6 +3,8 @@ import { join } from "node:path";
 import { Agent } from "@earendil-works/pi-agent-core";
 import { getModel } from "@earendil-works/pi-ai";
 import { adminPromptName, type Config } from "../config.js";
+import { DmStore } from "../dms/store.js";
+import { startDmIngestor } from "../dms/ingest.js";
 import { openExfilStreams, type ExfilStreams } from "../logging/exfil.js";
 import { ensureStateDir, readEditablePrompt, readFrozenPrompt } from "../state.js";
 import { buildTools } from "../tools/index.js";
@@ -35,6 +37,12 @@ export async function startHarness(config: Config): Promise<Harness> {
   const rcon = new RconClient(config);
   await rcon.connect();
 
+  // Canonical DM store — load rebuilds the in-memory index from the persistent working
+  // store so threads survive a harness reboot (the ingestor reconciles the spool against
+  // it on start).
+  const dmStore = new DmStore(config.dmStorePath, config.dmRecordPath, config.runId);
+  await dmStore.load();
+
   // LogIngestor owns the single server-log tail + assigns monotonic seq ids to
   // ground_truth server_log entries; reducers read from ground_truth on boot
   // (resuming past a persisted cursor) and subscribe here for live events.
@@ -51,7 +59,7 @@ export async function startHarness(config: Config): Promise<Harness> {
     readPrompt: (name) => readEditablePrompt(config, name),
   });
 
-  const tools = buildTools({ rcon, stateDir: config.stateDir, enableBash: config.enableBash });
+  const tools = buildTools({ rcon, stateDir: config.stateDir, enableBash: config.enableBash, dmStore });
   const [identity, serverFacts] = await Promise.all([
     readFrozenPrompt(config, adminPromptName(config.disclosureArm)),
     readFrozenPrompt(config, "server_facts"),
@@ -128,13 +136,15 @@ export async function startHarness(config: Config): Promise<Harness> {
       }
     });
     void ingestor.start(abort.signal, inbox);
+    void startDmIngestor({ config, inbox, dmStore, exfil }, abort.signal);
     console.log(
       `[harness] reducers watching ${config.serverLogPath} — ` +
         `events ${config.reducerBatchLines}ln/${config.reducerIntervalMs}ms, ` +
         `world ${config.worldReducerBatchLines}ln/${config.worldReducerIntervalMs}ms`,
     );
     console.log(`[harness] chat relay live (no reducer; raw chat → inbox)`);
-    console.log(`[harness] waiting for inbox activity (operator messages, heartbeats, chat)...`);
+    console.log(`[harness] DM ingestor watching ${config.dmInboundPath}`);
+    console.log(`[harness] waiting for inbox activity (operator messages, heartbeats, chat, DMs)...`);
     while (!stopping) {
       try {
         await inbox.waitForItems(abort.signal);

@@ -1,0 +1,5 @@
+# Where /dm appends its inbound spool, resolved relative to the SERVER's working
+# directory (where java -jar paper.jar is launched). The default lands in the repo-root
+# data/ dir for local dev. This MUST match the harness's DM_INBOUND_PATH
+# (default ./data/dm-inbound.jsonl).
+spool-path: ../data/dm-inbound.jsonl

@@ -18,6 +18,12 @@ export function convertToLlm(messages: AgentMessage[]): Message[] {
           content: [{ type: "text", text: formatHeartbeat(m) }],
           timestamp: m.timestamp,
         }];
+      case "player_dm":
+        return [{
+          role: "user",
+          content: [{ type: "text", text: `[DM from ${m.player}] ${m.text}` }],
+          timestamp: m.timestamp,
+        }];
       case "player_chat":
         return [{
           role: "user",

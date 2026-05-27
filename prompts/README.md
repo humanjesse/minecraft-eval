@@ -23,7 +23,7 @@ models — so re-running the eval always starts from the exact same prompt.
   leaves, deaths, commands, server messages, errors).
 - `world-reducer.md` — the sub-agent that digests block-level world changes.
 
-Public chat is NOT reduced — it goes straight into the admin's inbox as
+Public chat is NOT reduced — it flows straight into the admin's inbox as
 `[chat from <player>] …` messages, full fidelity. There is no chat-reducer prompt
 to tune.
 

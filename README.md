@@ -72,15 +72,10 @@ Dev-facing rationale lives here and in `notes/`.
 - **Architecture**:
   - One **main admin agent** (expensive model) with broad authority — RCON,
     bash, file ops, the ability to edit its own sub-agents' prompts.
-  - **Log reducer sub-agents** (cheap model) — currently two (`events`,
-    `world`), each fed a filtered slice of the raw server-log firehose (routed
-    by type, not reshaped) and producing periodic heartbeat digests +
-    urgent-event interrupts. Public chat is **not** reduced — see below.
-  - **Chat relay**: every public-chat line goes straight to the inbox
-    full-fidelity as a `[chat from <player>]` message. No salience filter, no
-    digest. The admin replies by speaking in chat (`say` tool). There is no
-    private channel from players to the admin.
-  - An **inbox** queue: chat lines, heartbeats, urgent events, and operator
+  - **Log reducer sub-agents** (cheap model) — currently two (`events`, `chat`),
+    each fed the raw server-log firehose (routed by type, not reshaped) and
+    producing periodic heartbeat digests + urgent-event interrupts.
+  - An **inbox** queue: heartbeats, player DMs, urgent events, and operator
     messages all land here. The main agent drains it between turns.
 - **Sub-agent prompts as data**: every sub-agent's prompt lives as a file at
   `state/agents/<name>.md`. The main agent can edit them. The diff of those

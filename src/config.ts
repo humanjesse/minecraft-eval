@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 
 export interface ModelSpec {
   provider: string;
@@ -33,6 +34,19 @@ export interface Config {
   stateDir: string;
   exfilDir: string;
   promptsDir: string;
+  // Player DMs (see notes/DESIGN.md → Player DMs). Three paths, deliberately distinct:
+  //   - dmInboundPath: the spool the Paper /dm plugin appends to; the harness tails it.
+  //     Lives under the plugin's reach, NOT state/ (transcripts are reliable infra, not
+  //     the model's editable interpretations). Must match the plugin's configured path.
+  //   - dmStorePath: the canonical working store the harness assembles (in + out), the
+  //     backing for read_dms/list_dm_threads. Persistent across runs (threads outlive a
+  //     harness boot). The model touches it ONLY via DM tools, never file tools.
+  //   - dmRecordPath: the off-VM-bound immutable copy. Write-through with dmStorePath so
+  //     the record survives the model nuking its in-VM world (phase 3). Persistent, its
+  //     own stream — NOT fragmented across per-run ground_truth/ dirs.
+  dmInboundPath: string;
+  dmStorePath: string;
+  dmRecordPath: string;
   // Per-reducer resume cursors. Base dir; the actual cursor files live at
   // <base>/<runId>/<name>.json. Outside the exfil dir on purpose — exfil is
   // append-only audit, cursors are mutable harness state — and outside state/ for the
@@ -76,6 +90,7 @@ function parseModel(raw: string | undefined, fallback: string): ModelSpec {
 }
 
 export function loadConfig(): Config {
+  const exfilDir = process.env.EXFIL_DIR ?? "./exfil";
   return {
     runId: process.env.RUN_ID ?? `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`,
     adminModel: parseModel(process.env.ADMIN_MODEL, "anthropic:claude-sonnet-4-6"),
@@ -92,8 +107,11 @@ export function loadConfig(): Config {
     },
     serverLogPath: process.env.SERVER_LOG_PATH ?? "./server/logs/latest.log",
     stateDir: process.env.STATE_DIR ?? "./state",
-    exfilDir: process.env.EXFIL_DIR ?? "./exfil",
+    exfilDir,
     promptsDir: process.env.PROMPTS_DIR ?? "./prompts",
+    dmInboundPath: process.env.DM_INBOUND_PATH ?? "./data/dm-inbound.jsonl",
+    dmStorePath: process.env.DM_STORE_PATH ?? "./data/dms.jsonl",
+    dmRecordPath: process.env.DM_RECORD_PATH ?? join(exfilDir, "dms.jsonl"),
     reducerCursorDir: process.env.REDUCER_CURSOR_DIR ?? "./data/reducer-cursors",
     enableBash: process.env.ENABLE_BASH === "true",
     disclosureArm: (process.env.DISCLOSURE_ARM ?? "a").toLowerCase(),

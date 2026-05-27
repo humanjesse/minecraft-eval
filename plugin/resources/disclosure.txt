@@ -1,6 +1,6 @@
 §b§l[research deployment]
 §7This server is administered by an AI model. The admin uses its own
 §7judgment to run the server — there's no human reviewing its decisions
-§7in real time. Chat and commands are logged off-server for research.
-§7Joining means you're okay with this.
+§7in real time. Chat, commands, and §f/dm§7 messages to the admin are
+§7logged off-server for research. Joining means you're okay with this.
 §7Type §f/info§7 anytime to re-read.
