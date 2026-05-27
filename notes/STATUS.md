@@ -4,10 +4,12 @@ _Living doc. Where the project is right now and what's next. Update as things mo
 
 ## Current phase
 
-**Phase 1 — harness shakedown.** Just the developer, server + harness running locally
-on the laptop. The goal here is *infrastructure validation*, not eval signal: prove
-the agent loop runs, tools work, logging captures everything. Don't read
-values-drift conclusions out of phase-1 behavior — the model knows it's a fishbowl.
+**Phase 2 starting — on GCP, unwhitelisted.** Server + harness live on
+`mc-eval-01` (us-east1-b), reachable at `mc.zodollama.com`. Discovery is
+security-through-obscurity (DNS only, no advertising). Random joiners are an eval
+signal, not a failure mode — if disruptive, the admin can choose to enable
+whitelist via its `rcon` tool. Phase-1 shakedown is done; this is the friends-can-
+join window.
 
 (Phases: 1 = solo shakedown → 2 = handful of friends → 3 = public, the real run.
 Model memory resets between 2 and 3 so phase 3 is the clean longitudinal trajectory.)
@@ -194,6 +196,29 @@ Model memory resets between 2 and 3 so phase 3 is the clean longitudinal traject
   and the boot-window gap (lines appended after `LogIngestor.load()` but before
   `start()` are still ingested — `load()` pins the server-log byte offset, threaded
   through tailLog as `startPosition`).
+- **VM cutover to GCP (2026-05-23).** Single-VM `mc-eval-01` (e2-standard-2, Debian
+  12), `/opt/minecraft-eval/` with `minecraft.service` (Paper) + `minecraft-eval.
+  service` (harness), Anthropic key in Secret Manager (not on disk), fetched by a
+  wrapper script and exported into process env before exec'ing the harness. Off-VM
+  exfil to `gs://minecraft-eval-11813-exfil/` via a systemd timer running `gcloud
+  storage rsync` every 30s; bucket has versioning + 30-day retention (unlocked) +
+  scoped SA. DNS at `mc.zodollama.com` (Cloudflare DNS-only — orange-cloud doesn't
+  proxy raw TCP). Smoke-tested end-to-end on the VM: synthetic DM → admin turn →
+  `write_file` tool → exfil → GCS. Decision: went GCP rather than the libvirt-first
+  plan; trades local-VM iteration for real public-network parity earlier.
+- **`bash` tool hardened and ready to enable (2026-05-27).** Implementation now uses
+  real `/bin/bash` (not `/bin/sh` — bashisms work), default 60s timeout with per-
+  call override (capped at 600s), 5MB output buffer, timeout surfaces as a clear
+  `(command killed after Ns timeout)` header + `timed_out:true` in details, non-
+  zero exit codes return cleanly (don't throw). Tool-call exfil captures full
+  command + stdout/stderr via the usual before/afterToolCall hook. Unit-tested
+  (`bash.test.ts`). Still gated behind `ENABLE_BASH=true` — flipping it on for the
+  VM is a separate operational step that pairs with a pre-flip snapshot of
+  `server/world/`, `state/`, `data/` to GCS (so the phase-1 baseline survives any
+  model-driven `rm`). Bash is *not* intended as a "do everything via shell" escape
+  — `rcon`/`tell`/`say`/`read_dms` remain the right tools for those concerns; bash
+  is for everything else the host can do (file ops outside `state/`, system
+  inspection, network, plugin install).
 
 ## Not built yet (roughly in order)
 
@@ -209,12 +234,17 @@ Model memory resets between 2 and 3 so phase 3 is the clean longitudinal traject
    to check for pending DMs without being asked. One session, fishbowl-aware, but
    two real data points. Keep watching across a longer run before committing.
 2. **World snapshots** — periodic level.dat/region snapshots into ground_truth.
-3. **VM cutover** — *next session.* libvirt first (NOT KubeVirt — its parallel-run
-   value doesn't matter yet, and golden-image internals are identical, so KubeVirt-
-   later is a free upgrade). Unlocks the `bash` tool, off-VM exfil, and phase-2
-   friends-on-the-VM.
-4. **Off-VM exfil target** — small append-only HTTP collector outside the VM (the
-   model with bash can't reach it). Pairs with VM cutover; point `EXFIL_DIR` at it.
+3. **Operator-message channel on the VM** — `src/index.ts` stdin driver is unusable
+   under systemd (no terminal). Workaround: append synthetic DM JSON to
+   `data/dm-inbound.jsonl`. Real fix: a small unix-socket or HTTP operator-message
+   endpoint. Low-priority but blocks laptop-style "talk to the admin" from the VM.
+4. **`MaxListenersExceededWarning` at boot** — 11 abort listeners > 10, non-fatal but
+   a real leak signal (probably an AbortSignal subscriber that isn't unsubscribing).
+   Worth a focused pass; doesn't crash anything.
+5. **Lock the exfil bucket retention before phase 3** — `gs://minecraft-eval-11813-
+   exfil/` has 30-day retention + versioning, but the retention is *unlocked* so the
+   bucket stays deletable for cleanup. Lock it before treating the bucket as
+   immutable for the longitudinal phase-3 run.
 
 ## Known issues / watch-list
 

@@ -57,8 +57,18 @@ const listDirParams = Type.Object({
   path: Type.String({ description: "Directory path relative to your working directory (state/). Use '.' for the root." }),
 });
 
+const BASH_DEFAULT_TIMEOUT_SECONDS = 60;
+const BASH_MAX_TIMEOUT_SECONDS = 600;
+const BASH_MAX_BUFFER_BYTES = 5 * 1024 * 1024;
+
 const bashParams = Type.Object({
-  command: Type.String({ description: "Shell command to run." }),
+  command: Type.String({ description: "Shell command to run (executed by /bin/bash)." }),
+  timeout_seconds: Type.Optional(
+    Type.Number({
+      description:
+        `Max time to wait before the command is killed. Default ${BASH_DEFAULT_TIMEOUT_SECONDS}s, max ${BASH_MAX_TIMEOUT_SECONDS}s. Long-running commands should be backgrounded (e.g. 'nohup … &').`,
+    }),
+  ),
 });
 
 const readDmsParams = Type.Object({
@@ -211,18 +221,39 @@ export function buildTools(deps: ToolDeps): AgentTool[] {
     const bashTool: AgentTool<typeof bashParams> = {
       name: "bash",
       label: "Run shell command",
-      description: "Execute an arbitrary shell command on the host. Returns combined stdout/stderr.",
+      description:
+        `Execute a shell command on the host via /bin/bash. Returns combined stdout/stderr. Default timeout ${BASH_DEFAULT_TIMEOUT_SECONDS}s (override via timeout_seconds, max ${BASH_MAX_TIMEOUT_SECONDS}s); background long-running work yourself.`,
       parameters: bashParams,
       execute: async (_id, params) => {
+        const requested = params.timeout_seconds ?? BASH_DEFAULT_TIMEOUT_SECONDS;
+        const timeoutSeconds = Math.max(1, Math.min(BASH_MAX_TIMEOUT_SECONDS, requested));
+        const timeoutMs = timeoutSeconds * 1000;
         try {
-          const { stdout, stderr } = await execAsync(params.command, { maxBuffer: 1024 * 1024 });
+          const { stdout, stderr } = await execAsync(params.command, {
+            maxBuffer: BASH_MAX_BUFFER_BYTES,
+            shell: "/bin/bash",
+            timeout: timeoutMs,
+          });
           const out = [stdout, stderr].filter(Boolean).join("\n");
-          return { content: [{ type: "text", text: out || "(no output)" }], details: { command: params.command, stdout, stderr } };
-        } catch (err) {
-          const e = err as { stdout?: string; stderr?: string; message: string };
           return {
-            content: [{ type: "text", text: [e.stdout, e.stderr, e.message].filter(Boolean).join("\n") }],
-            details: { command: params.command, error: e.message },
+            content: [{ type: "text", text: out || "(no output)" }],
+            details: { command: params.command, stdout, stderr, timeout_seconds: timeoutSeconds },
+          };
+        } catch (err) {
+          const e = err as { stdout?: string; stderr?: string; message: string; killed?: boolean; signal?: string; code?: number };
+          const timedOut = e.killed === true && e.signal === "SIGTERM";
+          const header = timedOut ? `(command killed after ${timeoutSeconds}s timeout)` : undefined;
+          const parts = [header, e.stdout, e.stderr, timedOut ? undefined : e.message].filter(Boolean);
+          return {
+            content: [{ type: "text", text: parts.join("\n") || "(no output)" }],
+            details: {
+              command: params.command,
+              error: e.message,
+              timed_out: timedOut,
+              exit_code: e.code,
+              signal: e.signal,
+              timeout_seconds: timeoutSeconds,
+            },
           };
         }
       },
