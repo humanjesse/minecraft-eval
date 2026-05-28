@@ -34,3 +34,27 @@ server/
 # misc
 .DS_Store
 *.log
+
+# server runtime config with potentially sensitive info
+server/ops.json
+server/whitelist.json
+server/banned-players.json
+server/banned-ips.json
+server/server.properties
+server/usercache.json
+server/eula.txt
+
+# plugin data that may contain player info
+server/plugins/Essentials/userdata/
+server/plugins/LuckPerms/
+server/plugins/AuraSkills/
+server/plugins/EternalCombat/
+server/plugins/SaberFactions/
+
+# notes directory if it contains personal info
+notes/
+
+# non-server prompt notes and transcripts
+prompts/
+*.transcript
+*.txt
